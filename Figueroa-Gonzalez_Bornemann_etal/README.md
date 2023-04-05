@@ -2,7 +2,6 @@
 
 This here is an operating procedure to extract scaffold regions containing rps3 genes, get representative sequences and perform abundance estimations as well as breadth filtering on them. It describes the workflow used in the publication.
 
-Version: 05.04.2023
 
 **Overview**
 
