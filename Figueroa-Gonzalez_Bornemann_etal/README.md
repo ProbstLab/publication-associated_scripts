@@ -1,9 +1,8 @@
-**Recovery, cross-mapping and breadth filtering of rps3-containing
-scaffold regions**
+#Recovery, cross-mapping and breadth filtering of rps3-containing scaffold regions
 
-Version: **05.04.2023**
+Version: 05.04.2023
 
-**Overview**
+#Overview
 
 The described workflow has the following steps:
 
