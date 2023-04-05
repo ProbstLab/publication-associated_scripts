@@ -22,9 +22,9 @@ determination)
 6\) breadth filtering
 
 In its current form, the workflow is not steamlined, i.e., the user
-needs to do some parsing in between steps (commands will be provided)
-and needs to execute the scripts in the right order. Future versions
-will aim to steamline this process.
+needs to do parsing in between steps (commands will be provided)
+and also needs to execute the scripts in the right order. Future versions
+will aim to streamline this process.
 
 **Dependencies**
 
@@ -48,21 +48,21 @@ will aim to steamline this process.
 
 **Databases / files**
 
-- 220120_rpS3_DNGNGWU00028.hmm hmm from Phylosift hmms
+- 220120_rpS3_DNGNGWU00028.hmm; Hidden-Markov-Model for the ribosomal protein S3 from the Phylosift list of hmms for phylogenomic analyses
   (<https://phylosift.wordpress.com/tutorials/scripts-markers/> )
 
 > **Preliminary remarks**
 
-- Note that all scaffoldids/geneids need to be unique across all
-  samples, hence adding, e.g., a sample identifier to scaffold/gene
-  names is recommended (add it to the start of the scaffold/gene id,
-  otherwise the prodigal format will be destroyed).
+- Note that all scaffoldids/gene IDs need to be unique across all
+  samples, hence adding, <i>e.g.</i>, a unique sample identifier to the scaffold/gene
+  names is recommended (add it to the start of the scaffold/gene ID,
+  otherwise the prodigal format will be disrupted).
 
 - Scripts work with both contigs and scaffolds
 
 - {description} will be used as a placeholder for an input file you will
   need to provide, with the ‘description’ showing what file it is.
-  Replace the {description} with your input file (without the brackets)
+  Replace the {description} with your input file (without the curly brackets)
 
 - Scaffold regions around rpS3 genes that were extracted will be called
   ‘rps3adj’ herein
@@ -76,8 +76,9 @@ For each sample:
 \- Genes in nucleotide format, with prodigal-style headers containing
 start/stop info for each gene on the respective scaffold
 
-\- Annotations of genes vs FunTaxDB (Bornemann et al., 2023)  (.b6
-format BLAST output)
+\- Annotations of genes against FunTaxDB (Bornemann et al., 2023)  (The output file should be in the BLAST .b6 tabular format)
+
+# Workflow 
 
 **1) Identification of rpS3 genes**
 
@@ -99,29 +100,29 @@ bash 01_rpS3geneprediction.sh{fna} {b6 output}
 
 - Will produce a rps3_hits.fna file as the final output containing genes
   annotated as *rpS3* in nucleotide format, with hits identified via
-  either/or BLAST annotations and hmmsearch
+  either/or BLAST annotations and hmmsearch.
 
 - Also produces multiple temporary files (rpS3_hmm.hits, rpS3_grep.hits
-  and rpS3.hits ) that are deleted at the end
+  and rpS3.hits ) that are automatically deleted at the end.
 
 **Remarks**
 
-**-** by default uses 10 threads, can be adjusted in the script
+**-** By default, it uses 10 threads, can be adjusted in the script.
 
-\- if pullseq/hmmsearch are not in your PATH, give the entire path to
-the software to execute them
+\- If pullseq/hmmsearch are not in your PATH, give the entire path to
+the software to execute them.
 
-\- there are a few intermediate files which can be deleted as only the
-rps3_hits.fna file is needed in the end 
+\- There are a few intermediate files which can be deleted as only the
+rps3_hits.fna file is ultimately needed.
 
  
 
-**2) rpS3 gene Clustering and selection of representative sequences**
+**2) rpS3 gene clustering and selection of representative sequences**
 
 **Requirements**
 
 \- *rpS3* genes in fna format for all assemblies that are to be
-clustered in a single file with unique IDs
+clustered in a single file, all entries with unique IDs
 
 **Usage**
 
@@ -139,34 +140,34 @@ Three files will be produced by the 02_rps3geneclustering.sh script:
 
 - {pooledrpS3.fna}.uc
 
-  - The last file is the one (with the .uc extension) we will continue
-    with and use the second of the scripts on
-
-The second script will simply simplify the .uc output file and only save
-the relevant columns in a rps3_clustertype2clusternum2geneid.txt file
+  - The last file (only one withe the ".uc" (NOT clusters.uc) extension)) is the one we will continue
+    with and use the following part of the scripts on
+    
+This second script will solely simplify the .uc output file and only save
+the relevant columns in an rps3_clustertype2clusternum2geneid.txt file
 
 **Remarks**
 
 \- I would highly recommend working in a separate folder to your normal
-assembly folder as multiple files will be created in the next few steps
+assembly folder as multiple files will be created in the next few steps.
 
-\- the 64-bit implementation of usearch is not open-source and hence may
-not be available to everyone. There is an open-source vsearch
+\- The 64-bit implementation of usearch is not open-source and hence may
+not be available to everyone. There is an open source *vsearch*
 (<https://github.com/torognes/vsearch>) implementation you may use
-instead. Please see the vsearch github for the analoguous commands to
-the usearch commands specified in the script
+instead. Please see the vsearch github for the analogous commands to
+the *usearch* commands specified in the script.
 
 **3) Extraction of scaffold regions around it**
 
 **Requirements**
 
-For each sample (similar to step 1):
+For each sample (similar to step 1 of the workflow):
 
-\- .b6 BLAST output (same as used in 1)
+\- .b6 BLAST output (same format used in step 1 of the workflow)
 
-\- genes fna file
+\- Genes in fna format file
 
-\- scaffolds/contigs
+\- Scaffolds/contigs in a fasta file
 
 **Usage**
 
@@ -177,24 +178,23 @@ python3 04_extract_rps3adjregions_rpS3hmm1E-28.py {b6} {genes fna/faa}
 
 Two files are produced:
 
-\- A .fasta file with subsets of scaffold sequence around rpS3 genes, up
-to 1000 bp extended to either side by default
+\- A .fasta file with subsets of scaffold sequence found adjacent to the rpS3 genes, up
+to 1000 bp extended to either side, by default.
 
-\- a statistics file containing the starts/stops for each extracted gene
+\- A statistics file containing the starts/stops for each extracted gene
 on the scaffold as well as whether it could be extended for the full
-length (1000bp) in none, one or both directions (needed to select
-representative sequence)
+length (1000bp) in none, one or both directions (this is needed to select the
+representative sequences).
 
 **Remarks**
 
-\- this will both extract scaffold regions around the same rpS3 genes as
-identified in 1(it will redo the identification)
+\- This will both extract scaffold regions around the same rpS3 genes as
+identified in step 1 (it will redo the identification)
 
-\- the default setting set in the bottom of the script will extend the
-rpS3 genes by 1000 bp to both directions of its location on the scaffold
-if possible
+\- The default setting shown in the bottom of the script will extend the
+rpS3 genes by 1000 bp to both directions relative to the location of the *rps3* gene on the scaffold, if possible.
 
--\> if its not possible, it will extend as far as possible, i.e., to the
+\- If its not possible to extend 1000 bp per direction, it will extend as far as possible, *i.e.*, to the
 end of the scaffold 
 
 **4) Selection of representative sequences**
@@ -202,7 +202,7 @@ end of the scaffold 
 **Concept**
 
 \- The goal of this step is to find the best rpS3 sequence to represent
-each cluster determined in 2)
+each cluster determined in step 2).
 
 Order of priority for selection of the representative sequence per
 cluster:
@@ -212,10 +212,10 @@ cluster:
 
 2)  rpS3 is **not centroid but** could be **extended**
 
-3)  **longest rpS**
+3)  **longest rpS3** after extension
 
-the following section will have multiple iterations of usage/output
-detailing multiple small scripts in this section
+The following section will have multiple iterations of usage/output
+detailing multiple small scripts for this section
 
 1.  **Description**
 
