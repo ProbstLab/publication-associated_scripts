@@ -31,7 +31,7 @@ will aim to streamline this process.
 
 - **B**ourne **a**gain **sh**ell (bash)
 
-- **g**nu **awk** (gawk)
+- **g**nu **awk** (gawk) & awk
 
 - pullseq (<https://github.com/bcthomas/pullseq>)
 
