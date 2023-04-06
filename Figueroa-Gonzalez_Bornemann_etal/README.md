@@ -97,7 +97,7 @@ bash 01_rpS3geneprediction.sh{fna} {b6 output}
 
 **Output**
 
-- Will produce a rps3_hits.fna file as the final output containing genes
+- Will produce an rps3_hits.fna file as the final output containing genes
   annotated as *rpS3* in nucleotide format, with hits identified via
   either/or BLAST annotations and hmmsearch.
 
@@ -445,7 +445,7 @@ coverage of at least 1.
 just some region in the sequence is shared with some other higher
 abundant sequence and consequently overestimates the sequence abundance
 
-\- If a rps3adj gene had a breadth of \<95% in a sample, it's coverage
+\- If an rps3adj gene had a breadth of \<95% in a sample, it's coverage
 was set to 0.
 
 \- This analysis was done in R. If you have a scaffold2coverage table
