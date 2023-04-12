@@ -2,6 +2,14 @@
 
 This here is an operating procedure to extract scaffold regions containing rps3 genes, get representative sequences and perform abundance estimations as well as breadth filtering on them. It describes the workflow used in the publication.
 
+**Contact**
+
+You can contact me via till.bornemann@uni-due if you have any questions as to the contents of this subfolder.
+
+
+**LICENSE**
+
+This software is distributed via the MIT license (see LICENSE file). The .hmm located in the ./bin/ subfolder belongs to the Phylosift set of hmms (https://phylosift.wordpress.com/tutorials/scripts-markers/).
 
 **Overview**
 
@@ -293,8 +301,9 @@ rps3adj_repseqs.fasta containing the representative sequences
 
 - Map reads to rps3adj sequences and calculate coverage and breadth
 
-- Requires the calc_coverage_v3.rb script in the ./bin/ subfolder
-  relative to the script
+- Requires the 04_01calc_coverage_v3.rb script. This script is located in the uBin-Helperscripts repository under ./bin/04_01calc_coverage_v3.rb  (https://github.com/till-bornemann/uBin-helperscripts/blob/master/bin/04_01calc_coverage_v3.rb )
+  The script should be put into a ./bin/ subfolder relative to the 09_mapping.sh script.
+
 
 **Input**
 
