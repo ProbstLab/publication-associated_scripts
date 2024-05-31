@@ -1,0 +1,674 @@
+---
+title: "ES22_IMP_rpS3_analysis"
+output: html_document
+date: "2024-05-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library}
+library(vegan) 
+library(permute)  
+library(tidyverse)
+library(rempsyc)
+library(ggplot2)
+library(GUniFrac)
+library(cowplot)
+library(dendextend)
+library(dplyr)
+library(rcartocolor)
+library(patchwork)
+library(tidytext)
+library(scales)
+library(ggpubr)
+library(reshape2)
+library(ggdendro)
+```
+
+```{r load_data}
+setwd("XXX")
+dat <- read.table("ES22_IMP_S_vs_ES22_representative_seqs_rpS3_min100bp_head_adapt.tsv", sep = "\t", row.names=1, header=T)  ## rpS3 OTU table
+rpS3_table =read.table("ES22_IMP_S_vs_ES22_representative_seqs_rpS3_min100bp_head_adapt.tsv", sep="\t", header=T) ## rpS3 OTU table
+
+overview_tax =read.table("ES22_representative_seqs_rpS3.fasta.overview.txt_tax_cut", sep="\t", header=T) ## rpS3 contig taxonomy
+taxonomy_rpS3 =read.table("ES22_representative_seqs_rpS3.genes.faa-vs-FunTaxDB1.3.b6_taxonomy_similarity_e_va_contig_level", sep="\t") ## rpS3 gene taxonomy
+meta <- read.table("All_samples_meta.tsv", row.names=1, sep = "\t", header = T) ## meta info
+bp_count <- read.table("paired_count_bp_read_min100bp.tsv_adapt.tsv", sep = "\t", header=T) ## sequencing depth per sample
+```
+
+```{r modify}
+taxonomy_rpS3_header_names <- taxonomy_rpS3 %>% 
+  group_by(V1) %>% 
+  slice_max(order_by = V2) %>% 
+  slice_min(order_by = V3) %>% 
+  dplyr::rename(taxid = V1) %>% 
+  dplyr::rename(taxonomy=V4) %>% 
+  select(taxid,taxonomy)
+
+normalize_table <- bp_count %>% 
+  select(file, sum_len) %>% 
+  dplyr::rename(sample = file) %>%
+  group_by(sample) %>% 
+  summarise_at(vars(sum_len),list(total_bp_sum=sum)) %>% 
+  mutate(min=min(total_bp_sum, na.rm = T)) %>% 
+  mutate_at(vars(total_bp_sum), funs(min=min/.))
+
+dat_norm <- dat %>% 
+  rownames_to_column("taxid") %>% 
+  gather("sample", "coverage", -taxid)%>%  
+  left_join(normalize_table) %>%
+  mutate(coverage = as.double(coverage)) %>% 
+  mutate(norm_cov = coverage * min) %>% 
+  select(sample,norm_cov,taxid) %>% 
+  spread("sample", "norm_cov") %>% 
+  column_to_rownames("taxid")
+
+dat_norm_round <- dat_norm %>% round()
+
+meta_no_index <- meta %>%
+  mutate(name = substr(name, 1, nchar(name) - 1))
+
+meta_no_index_stress <-meta_no_index %>% filter(phase =="stress")
+meta_stress <- meta_no_index_stress %>% rownames_to_column("sample")
+meta_no_index_recovery <-meta_no_index %>% filter(phase =="recovery")
+meta_recovery <- meta_no_index_recovery %>% rownames_to_column("sample")
+
+dat_not_norm_stress <- dat %>% 
+  rownames_to_column("taxid") %>%
+  gather("sample", "coverage", -taxid) %>% 
+   left_join(meta_no_index %>% rownames_to_column("sample")) %>% 
+  filter(phase == "stress") %>% 
+  select(sample,coverage,taxid) %>% 
+  spread("sample", "coverage") %>% 
+  column_to_rownames("taxid") %>% round()
+
+dat_norm_stress <- dat %>% 
+  rownames_to_column("taxid") %>% 
+  gather("sample", "coverage", -taxid)%>%  
+  left_join(normalize_table) %>%
+  mutate(coverage = as.double(coverage)) %>% 
+  mutate(norm_cov = coverage * min) %>% 
+  select(sample,norm_cov,taxid) %>% 
+  left_join(meta_no_index %>% rownames_to_column("sample")) %>% 
+  filter(phase == "stress")%>% 
+  select(sample,norm_cov,taxid) %>% 
+  spread("sample", "norm_cov") %>% 
+  column_to_rownames("taxid")
+dat_norm_round_stress <- dat_norm_stress %>% round()
+
+dat_norm_recovery <- dat %>% 
+  rownames_to_column("taxid") %>% 
+  gather("sample", "coverage", -taxid)%>%  
+  left_join(normalize_table) %>%
+  mutate(coverage = as.double(coverage)) %>% 
+  mutate(norm_cov = coverage * min) %>% 
+  select(sample,norm_cov,taxid) %>% 
+  left_join(meta_no_index %>% rownames_to_column("sample")) %>% 
+  filter(phase == "recovery")%>% 
+  select(sample,norm_cov,taxid) %>% 
+  spread("sample", "norm_cov") %>% 
+  column_to_rownames("taxid")
+dat_norm_round_recovery <- dat_norm_recovery %>% round()
+
+dat_not_norm_recovery <- dat %>% 
+  rownames_to_column("taxid") %>%
+  gather("sample", "coverage", -taxid) %>% 
+   left_join(meta_no_index %>% rownames_to_column("sample")) %>% 
+  filter(phase == "recovery") %>% 
+  select(sample,coverage,taxid) %>% 
+  spread("sample", "coverage") %>% 
+  column_to_rownames("taxid") %>% round()
+
+```
+
+```{r rarefy}
+Rarefy <- T
+Iterations <- 100
+
+if (Rarefy) {
+    dat_rar = (Rarefy(t(round(dat))))$otu.tab.rff
+    dist_collect = vegdist(dat_rar, method="bray")
+    dat2 = dat_rar
+    rm (dat_rar)
+    for (j in 1:(Iterations-1)) {
+        dat_rar = (Rarefy(t(dat_norm_round)))$otu.tab.rff
+        dist_collect = dist_collect + vegdist(dat_rar, method="bray")
+        rm(dat_rar)
+    }
+    dist_final = dist_collect / Iterations
+    write.table(as.matrix(dist_final), paste("ES22_representative_seqs_rpS3.OTU_adapt_rounded_final2_dist_", Iterations, "_bray.txt", sep=""),quote=F, sep="\t", col.names = TRUE)
+    dist_matrix=dist_final
+    rm(dist_collect, dist_final)
+    dat_norm_round_rar = dat2
+}
+
+```
+
+```{r rarefy_stress}
+Rarefy <- T
+Iterations <- 100
+
+if (Rarefy) {
+    dat_rar_stress = (Rarefy(t(dat_not_norm_stress)))$otu.tab.rff
+    dist_collect_stress = vegdist(dat_rar_stress, method="bray")
+    dat2_stress = dat_rar_stress
+    rm (dat_rar_stress)
+    for (j in 1:(Iterations-1)) {
+        dat_rar_stress = (Rarefy(t(dat_norm_round_stress)))$otu.tab.rff
+        dist_collect_stress = dist_collect_stress + vegdist(dat_rar_stress, method="bray")
+        rm(dat_rar_stress)
+    }
+    dist_final_stress = dist_collect_stress / Iterations
+    write.table(as.matrix(dist_final_stress), paste("ES22_representative_seqs_rpS3.OTU_adapt_rounded_final2_dist_stress", Iterations, "_bray.txt", sep=""),quote=F, sep="\t", col.names = TRUE)
+    dist_matrix_stress=dist_final_stress
+    rm(dist_collect_stress, dist_final_stress)
+    dat_stress = dat2_stress
+}
+
+```
+
+```{r rarefy_recovery}
+Rarefy <- T
+Iterations <- 100
+
+if (Rarefy) {
+    dat_rar_recovery = (Rarefy(t(dat_not_norm_recovery)))$otu.tab.rff
+    dist_collect_recovery = vegdist(dat_rar_recovery, method="bray")
+    dat2_recovery = dat_rar_recovery
+    rm (dat_rar_recovery)
+    for (j in 1:(Iterations-1)) {
+        dat_rar_recovery = (Rarefy(t(dat_norm_round_recovery)))$otu.tab.rff
+        dist_collect_recovery = dist_collect_recovery + vegdist(dat_rar_recovery, method="bray")
+        rm(dat_rar_recovery)
+    }
+    dist_final_recovery = dist_collect_recovery / Iterations
+    write.table(as.matrix(dist_final_recovery), paste("ES22_representative_seqs_rpS3.OTU_adapt_rounded_final2_dist_recovery", Iterations, "_bray.txt", sep=""),quote=F, sep="\t", col.names = TRUE)
+    dist_matrix_recovery=dist_final_recovery
+    rm(dist_collect_recovery, dist_final_recovery)
+    dat_recovery = dat2_recovery
+}
+
+```
+
+```{r nmds}
+nmds_result_stress <- metaMDS(dist_matrix_stress,wascores=FALSE,zerodist="add")
+mds_stress.points <- cbind(nmds_result_stress$points[,1:2])
+mds_stress.points
+mds_stress.dat <- cbind(mds_stress.points, meta_no_index_stress)
+mds_stress.dat
+
+mds_stress.dat_plot <-ggplot(mds_stress.dat) +
+ aes(x = MDS1, y = MDS2, colour = name, group = velocity, fill = velocity, shape = velocity) +
+ geom_point( size = 4) +
+   scale_color_carto_d( direction = 1)+
+ theme_bw()+
+ stat_ellipse(geom = "polygon", type="norm", level=0.75, alpha=0.2, show.legend = T)+
+  xlab("NMDS1") +
+  ylab("NMDS2") +
+  annotate("text", x = Inf, y = Inf, label = paste("Stress value:", round(nmds_result_stress$stress,digits = 4)), 
+           hjust = 1, vjust = 1.1, size = 4, color = "black")+
+  labs(title = "A) Stressor phase")
+ggsave("ES22_IMP_NMDS_rpS3_stress.jpeg", width = 10, height = 10) ### For Figure
+
+nmds_result_recovery <- metaMDS(dist_matrix_recovery,wascores=FALSE,zerodist="add")
+mds_recovery.points <- cbind(nmds_result_recovery$points[,1:2])
+mds_recovery.points
+mds_recovery.dat <- cbind(mds_recovery.points, meta_no_index_recovery)
+mds_recovery.dat
+
+mds_recovery.dat_plot <- ggplot(mds_recovery.dat)  +
+ aes(x = MDS1, y = MDS2, colour = name, group = velocity, fill = velocity, shape = velocity) +
+ geom_point( size = 4) + 
+scale_color_carto_d( direction = 1)+# facet_grid(scales = "free_x",~factor(phase,levels=c("stress","recovery")))+
+ theme_bw()+
+ stat_ellipse(geom = "polygon", type="norm", level=0.75, alpha=0.2, show.legend = T)+ 
+  xlab("NMDS1") +
+  ylab("NMDS2") +
+  annotate("text", x = Inf, y = Inf, label = paste("Stress value:", round(nmds_result_recovery$stress,digits = 4)), 
+           hjust = 1, vjust = 1.1, size = 4, color = "black") + labs(title = "B) Recovery phase")
+ggsave("ES22_IMP_NMDS_rpS3_recovery.jpeg", width = 10, height = 10) ### For Figure
+```
+
+```{r adonis_mrpp}
+adonis2(dist_matrix_stress ~ temperature * salinity * velocity , data = meta_stress, permutations = 999, by ="margin")
+adonis2(dist_matrix_stress ~ temperature * salinity +  velocity * salinity + velocity * temperature , data = meta_stress, permutations = 999, by ="margin")
+adonis2(dist_matrix_stress ~ temperature +  velocity  + salinity , data = meta_stress, permutations = 999, by ="margin")
+
+adonis2(dist_matrix_recovery ~ temperature * salinity * velocity , data = meta_recovery, permutations = 999, by ="margin")
+adonis2(dist_matrix_recovery ~ temperature * salinity +  velocity * salinity + velocity * temperature , data = meta_recovery, permutations = 999, by ="margin")
+adonis2(dist_matrix_recovery ~ temperature +  velocity  + salinity , data = meta_recovery, permutations = 999, by ="margin")
+
+
+
+mrpp.phase <- mrpp(dist_matrix ,grouping = meta_no_index$phase,permutations = 999)
+
+mrpp.stress.velocity <- mrpp(dist_matrix_stress ,grouping = meta_no_index_stress$velocity,permutations = 999)
+mrpp.stress.salinity <- mrpp(dist_matrix_stress ,grouping = meta_no_index_stress$salinity,permutations = 999)
+mrpp.stress.temperature <- mrpp(dist_matrix_stress ,grouping = meta_no_index_stress$temperature,permutations = 999)
+
+mrpp.recovery.velocity <- mrpp(dist_matrix_recovery ,grouping = meta_no_index_recovery$velocity,permutations = 999)
+mrpp.recovery.salinity <- mrpp(dist_matrix_recovery ,grouping = meta_no_index_recovery$salinity,permutations = 999)
+mrpp.recovery.temperature <- mrpp(dist_matrix_recovery ,grouping = meta_no_index_recovery$temperature,permutations = 999)
+```
+
+```{r relative_abundance}
+##Used for heatmaps
+relative_tmp <- merge(dat_norm_round %>% as.data.frame() %>% rownames_to_column("taxid"),taxonomy_rpS3_header_names, by= "taxid")
+
+my.freq = function(x){
+  #just calculating the frequency. I prefer to make my functions outside of chains
+  x / sum(x)
+}
+
+relative <- relative_tmp %>% mutate(across(.cols = starts_with("E"), .fns = my.freq, .names = "{.col}"))  %>% 
+   mutate(taxonomy = str_remove(taxonomy, "Taxonomy="))
+
+raw_relative_gather <- relative %>% 
+  gather("sample", "coverage", -taxonomy, -taxid)  %>% 
+  mutate(taxonomy_keep = taxonomy) %>% 
+  #mutate(.=replace(.,which(.==""),NA)) %>% 
+  separate(taxonomy, sep = ";", remove = T,
+           into = c("Domain","Phylum","Class","Order","Family","Genus","Species")) %>%
+  mutate(Domain = if_else(Domain == "", NA_character_, Domain)) %>%
+  mutate(Phylum = if_else(Phylum == "", NA_character_, Phylum)) %>%
+  mutate(Class = if_else(Class == "", NA_character_, Class)) %>%
+  mutate(Order = if_else(Order == "", NA_character_, Order)) %>%
+  mutate(Family = if_else(Family == "", NA_character_, Family)) %>%
+  mutate(Genus = if_else(Genus == "", NA_character_, Genus)) %>%
+  mutate(Species = if_else(Genus == "", NA_character_, Species)) %>%
+  mutate(Phylum_new = case_when(
+    is.na(Phylum) ~ paste0("Unclassified_", Domain),
+    TRUE ~ Phylum))%>%
+  mutate( Class_new = case_when(
+      is.na(Phylum) & is.na(Class)  ~ paste0("Unclassified_", Domain),
+      !is.na(Phylum) & is.na(Class) ~ paste0("Unclassified_", Phylum),
+      TRUE ~ Class))%>%
+  mutate( Order_new = case_when(
+      is.na(Phylum) & is.na(Class) & is.na(Order)  ~ paste0("Unclassified_", Domain),
+      !is.na(Phylum) & is.na(Class) & is.na(Order)  ~ paste0("Unclassified_", Phylum),
+      !is.na(Phylum) & !is.na(Class) & is.na(Order) ~ paste0("Unclassified_", Class),
+      TRUE ~ Order))%>%
+  mutate(Family_new = case_when(
+      is.na(Phylum) & is.na(Class) & is.na(Order) & is.na(Family)  ~ paste0("Unclassified_", Domain),
+      !is.na(Phylum) & is.na(Class) & is.na(Order) & is.na(Family)  ~ paste0("Unclassified_", Phylum),
+      !is.na(Phylum) & !is.na(Class) & is.na(Order) & is.na(Family) ~ paste0("Unclassified_", Class),
+      !is.na(Phylum) & !is.na(Class) & !is.na(Order) & is.na(Family) ~ paste0("Unclassified_", Order),
+      TRUE ~ Family))%>%
+  mutate(Genus_new = case_when(
+      is.na(Phylum) & is.na(Class) & is.na(Order) & is.na(Family) & is.na(Genus)  ~ paste0("Unclassified_", Domain),
+      !is.na(Phylum) & is.na(Class) & is.na(Order) & is.na(Family) & is.na(Genus)  ~ paste0("Unclassified_", Phylum),
+      !is.na(Phylum) & !is.na(Class) & is.na(Order) & is.na(Family) & is.na(Genus) ~ paste0("Unclassified_", Class),
+      !is.na(Phylum) & !is.na(Class) & !is.na(Order) & is.na(Family) & is.na(Genus) ~ paste0("Unclassified_", Order),
+      !is.na(Phylum) & !is.na(Class) & !is.na(Order) & !is.na(Family) & is.na(Genus) ~ paste0("Unclassified_", Family),
+      TRUE ~ Genus))%>%
+    mutate(Species_new = case_when(
+      is.na(Phylum) & is.na(Class) & is.na(Order) & is.na(Family) & is.na(Genus)& is.na(Genus)  ~ paste0("Unclassified_", Domain),
+      !is.na(Phylum) & is.na(Class) & is.na(Order) & is.na(Family) & is.na(Genus)& is.na(Genus)  ~ paste0("Unclassified_", Phylum),
+      !is.na(Phylum) & !is.na(Class) & is.na(Order) & is.na(Family) & is.na(Genus)& is.na(Genus) ~ paste0("Unclassified_", Class),
+      !is.na(Phylum) & !is.na(Class) & !is.na(Order) & is.na(Family) & is.na(Genus) & is.na(Genus)~ paste0("Unclassified_", Order),
+      !is.na(Phylum) & !is.na(Class) & !is.na(Order) & !is.na(Family) & is.na(Genus) & is.na(Genus) ~ paste0("Unclassified_", Family),
+      !is.na(Phylum) & !is.na(Class) & !is.na(Order) & !is.na(Family) & !is.na(Genus) & is.na(Species) ~ paste0("Unclassified_", Genus),
+      TRUE ~ Species))%>%
+  select(-Phylum, -Class, -Order, -Family, -Genus,-Species) %>% 
+  dplyr::rename(Phylum = Phylum_new) %>% 
+  dplyr::rename(Class = Class_new) %>% 
+  dplyr::rename(Order = Order_new) %>% 
+  dplyr::rename(Family = Family_new) %>% 
+  dplyr::rename(Genus = Genus_new)%>%
+  dplyr::rename(Species = Species_new)%>%
+  left_join(.,meta_no_index %>% rownames_to_column("sample"))
+
+raw_relative_gather_only_tax <- raw_relative_gather %>% select(-sample,-coverage,-name,-velocity,-salinity,-phase,-temperature) %>% unique()
+```
+
+```{r linear_model}
+##Detecting significant OTUs per stressor set
+##For stressor phase only
+meta2 <- meta  %>% mutate(velocity = as.factor(velocity), salinity = as.factor(salinity), temperature = as.factor(temperature), phase = as.factor(phase))
+dat_meta_cmb2 <- cbind(t(dat_norm_round), meta2[, 2:5])
+
+
+stressor_anova <- dat_meta_cmb2 %>% filter(dat_meta_cmb2$phase=="stress")
+transformed_OTU_stress <- stressor_anova %>% select(-temperature, -phase, -salinity, -velocity)
+
+result_table_stress <- data.frame(OTU = character(),
+                           Stressor = character(),
+                           P_Value = numeric(),
+                           stringsAsFactors = FALSE)
+
+for (otu_name in colnames(transformed_OTU_stress)[-1]) {
+ anova_model <- aov(as.formula(paste(otu_name, "~ temperature * salinity * velocity")), data = stressor_anova)
+  p_values <- summary(anova_model)[[1]]$`Pr(>F)`
+  p_values <- p.adjust(p_values,method = "bonferroni")
+
+  main_effects <- p_values[1:3]
+  interaction_effect <- p_values[4:7]
+
+  otu_result <- data.frame(OTU = otu_name,
+                           Stressor = c("temperature", "salinity", "velocity","temperature:salinity","temperature:velocity","salinity:velocity","temperature:salinity:velocity"),
+                           P_Value = c(main_effects, interaction_effect),
+                           stringsAsFactors = FALSE)
+  
+  result_table_stress <- rbind(result_table_stress, otu_result)
+}
+
+result_table_stress_adj <-result_table_stress
+
+result_table_stress_p_adj_u_005 <- result_table_stress_adj %>% subset(P_Value < 0.05)%>%  dplyr::rename(taxid = OTU)
+
+result_table_stress_p_adj_u_005_tax <- merge(result_table_stress_p_adj_u_005,overview_tax, by= "taxid")
+
+
+## Next step -> perform posthoc test on those that were significant 
+
+stressor_anova_rename <- stressor_anova
+stressor_anova_rename$temperature <- str_replace_all(stressor_anova_rename$temperature,"normal","Tbackground")
+stressor_anova_rename$temperature <- str_replace_all(stressor_anova_rename$temperature,"increased","Tincreased")
+stressor_anova_rename$salinity <- str_replace_all(stressor_anova_rename$salinity,"background","no_salinity")
+stressor_anova_rename$velocity <- str_replace_all(stressor_anova_rename$velocity,"normal","normal_flow")
+stressor_anova_rename$velocity <- str_replace_all(stressor_anova_rename$velocity,"reduced","reduced_flow")
+
+
+significant_stress <- result_table_stress_p_adj_u_005_tax$taxid 
+
+result_table_stress_tukey_HSD <- data.frame(OTU = character(),
+                           name = character(),
+                           "p adj" = numeric(),
+                           stringsAsFactors = FALSE,
+                           diff=numeric())
+for (otu_name in significant_stress) {
+   anova_model <- aov(as.formula(paste(otu_name, "~ temperature * salinity * velocity")), data = stressor_anova_rename)
+
+  tukey_results <- TukeyHSD(anova_model)
+  
+  tukey_results_table <- as.data.frame(do.call(rbind, tukey_results))
+  tukey_results_table$name <- row.names(tukey_results_table)
+  tukey_results_table$OTU <- otu_name
+  tukey_results_table <- tukey_results_table[, c("p adj","name","OTU","diff")]
+
+  result_table_stress_tukey_HSD <- rbind(result_table_stress_tukey_HSD, tukey_results_table)
+} 
+
+
+result_table_stress_tukey_HSD_005 <- result_table_stress_tukey_HSD %>% subset(result_table_stress_tukey_HSD$`p adj`< 0.01) %>%  dplyr::rename(taxid = OTU)
+result_table_stress_tukey_HSD_005_tax <- merge(result_table_stress_tukey_HSD_005,taxonomy_rpS3_header_names, by= "taxid")
+
+# Print the final adjusted p-values table
+result_table_stress_tukey_HSD_005_tax_adj <- result_table_stress_tukey_HSD_005_tax
+```
+
+```{r merging_taxonomic_information_and_plotting}
+
+significant_OTUs_stressor <- result_table_stress_tukey_HSD_005_tax_adj$taxid %>% unique()
+raw_relative_gather_selected_significant <- raw_relative_gather %>% filter(taxid %in% significant_OTUs_stressor)
+
+color_mapping <- c(
+ "temperature_change" = "#e31a1c",                        
+ "temperature_change+flow_change+salt_change" ="#ff7f00",
+ "flow_change"= "#b15928",
+ "flow_change+salt_change"= "#6a3d9a",
+ "salt_change"= "#a6cee3",
+ "temperature_change+flow_change" =  "#33a02c",
+ "temperature_change++salt_change"="#1f78b4"
+) 
+
+process_labels <- function(label) {
+  labels <- strsplit(label, ";")[[1]]
+  result <- paste(c(labels[1], labels[length(labels)]), collapse = ";")
+  return(result)
+}
+
+
+get_phyla <- function(label) {
+  labels <- strsplit(label, ";")[[1]]
+  result <- paste(c(labels[1], labels[2]), collapse = ";")
+  return(result)
+}
+
+
+result_table_stress_tukey_HSD_005_tax_uniq <- result_table_stress_tukey_HSD_005_tax %>% unique()
+
+result_table_stress_tukey_HSD_005_tax_uniq_lowest_value <- result_table_stress_tukey_HSD_005_tax_uniq  %>% 
+  group_by(taxonomy) %>% 
+  filter(`p adj` == min(`p adj`))  %>%
+  separate(name, into = c("stressor_set1", "stressor_set2"), sep = "-") %>% 
+  mutate(stressor_change_temp = ifelse((str_detect(stressor_set1, "Tbackground") & str_detect(stressor_set2, "Tincreased")) |
+                                    (str_detect(stressor_set1, "Tincreased") & str_detect(stressor_set2, "Tbackground")), 
+                                    "temperature_change", "")) %>% 
+  mutate(stressor_change_flow = ifelse((str_detect(stressor_set1, "reduced_flow") & str_detect(stressor_set2, "normal_flow")) |
+                                    (str_detect(stressor_set1, "normal_flow") & str_detect(stressor_set2, "reduced_flow")), 
+                                    "flow_change", ""))  %>% 
+  mutate(stressor_change_sal = ifelse((str_detect(stressor_set1, "salt") & str_detect(stressor_set2, "no_salinity")) |
+                                    (str_detect(stressor_set1, "no_salinity") & str_detect(stressor_set2, "salt")), 
+                                    "salt_change", "")) %>% 
+  unite(combined_column, stressor_change_temp, stressor_change_flow, stressor_change_sal, sep = '+', remove = T, na.rm = TRUE) %>% 
+ mutate(combined_column = str_replace(combined_column, "^\\+|\\+$", "")) %>% 
+   mutate(combined_column = str_replace(combined_column, "^\\+|\\+$", "")) %>% 
+  mutate(taxonomy = str_replace(taxonomy, "Taxonomy=", "")) %>% 
+  select(taxonomy, `p adj`, combined_column,diff)
+
+
+raw_relative_gather_selected_significant_for_plot_stressorphase <- raw_relative_gather_selected_significant %>% 
+  filter(phase=="stress") %>%   
+  group_by(name,phase,taxid)%>%
+    summarise_at(vars(coverage),list(mean_cov=mean))%>%
+    left_join(raw_relative_gather_only_tax) %>%
+    group_by(name,phase,taxonomy_keep)%>%
+    summarise_at(vars(mean_cov),list(sum_cov=sum)) %>% 
+    left_join(meta_no_index) %>% 
+    unique()  %>%
+    group_by(taxonomy_keep) %>% 
+     mutate(zscore = (sum_cov - mean(sum_cov))/sd(sum_cov))
+
+raw_relative_gather_selected_significant_for_plot_sorted_stressorphase <- raw_relative_gather_selected_significant_for_plot_stressorphase[order(raw_relative_gather_selected_significant_for_plot_stressorphase$temperature,raw_relative_gather_selected_significant_for_plot_stressorphase$velocity),]
+
+
+significant_rpS3_merge_stressorphase <- result_table_stress_tukey_HSD_005_tax_uniq_lowest_value[order(result_table_stress_tukey_HSD_005_tax_uniq_lowest_value$combined_column, decreasing=F),] %>% 
+  select(taxonomy) %>% 
+  unique() %>% 
+  dplyr::rename(taxonomy_keep = taxonomy)%>%  
+  tibble::rowid_to_column(., "ID") %>%  
+  right_join(raw_relative_gather_selected_significant_for_plot_stressorphase) %>% 
+  left_join(result_table_stress_tukey_HSD_005_tax_uniq_lowest_value %>%            
+  select(-'p adj') %>%                                             
+  dplyr::rename(taxonomy_keep=taxonomy)) %>%
+  mutate(color_column = color_mapping[combined_column]) %>% 
+  mutate(combined_column = str_replace(combined_column,"\\+\\+", "+"))
+
+
+significant_rpS3_merge_stressorphase_sorted <- significant_rpS3_merge_stressorphase[order(significant_rpS3_merge_stressorphase$combined_column),]
+
+significant_rpS3_merge_stressorphase_sorted %>%
+    mutate(y_label = ifelse(diff > 0, "Positive", "Negative")) %>% 
+    filter(!is.na(combined_column)) %>% 
+    filter(grepl("flow_change",combined_column )) %>%
+   arrange(combined_column, y_label, taxonomy_keep)%>%
+    ggplot() +
+    aes(x = name, y = fct_inorder(paste0(taxonomy_keep, "&", combined_column, "&",y_label)), fill = zscore) +
+    geom_tile() +
+    guides(y = ggh4x::guide_axis_nested(delim = "&"))+
+    scale_fill_carto_c(palette = "Earth",direction = 1,na.value="white") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 25, vjust = 1, hjust=1),
+          ggh4x.axis.nestline.y = element_line(size = 0.5), text= element_text(size = 25))+
+    xlab("Treatment after stressor phase") +
+    ylab("RpS3 genes with significant increase (positive)\n or decrease (negative) due to stressor") +
+    scale_y_discrete(labels = function(x) sapply(x, process_labels))
+
+ggsave("ES22_IMP_rps3_all_impacts_only_velocity_stressorphase_only.jpeg", width = 30, height = 25) ## For Figure
+
+significant_rpS3_merge_stressorphase_sorted %>%
+    mutate(y_label = ifelse(diff > 0, "Positive", "Negative")) %>% 
+    filter(!is.na(combined_column)) %>% 
+    filter(grepl("temperature_change",combined_column )) %>%
+   arrange(combined_column, y_label, taxonomy_keep)%>%
+    ggplot() +
+    aes(x = name, y = fct_inorder(paste0(taxonomy_keep, "&", combined_column, "&",y_label)), fill = zscore) +
+    geom_tile() +
+    guides(y = ggh4x::guide_axis_nested(delim = "&"))+
+    scale_fill_carto_c(palette = "Earth",direction = 1,na.value="white") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 25, vjust = 1, hjust=1),
+          ggh4x.axis.nestline.y = element_line(size = 0.5), text= element_text(size = 25))+
+    xlab("Treatment after stressor phase") +
+    ylab("RpS3 genes with significant increase (positive)\n or decrease (negative) due to stressor") +
+    scale_y_discrete(labels = function(x) sapply(x, process_labels))
+ggsave("ES22_IMP_rps3_all_impacts_only_temperature_stressorphase_only.jpeg", width = 30, height = 25) ## For Figure
+
+significant_rpS3_merge_stressorphase_sorted %>%
+    mutate(y_label = ifelse(diff > 0, "Positive", "Negative")) %>% 
+    filter(!is.na(combined_column)) %>% 
+    filter(grepl("salt_change",combined_column )) %>%
+   arrange(combined_column, y_label, taxonomy_keep)%>%
+    ggplot() +
+    aes(x = name, y = fct_inorder(paste0(taxonomy_keep, "&", combined_column, "&",y_label)), fill = zscore) +
+    geom_tile() +
+    guides(y = ggh4x::guide_axis_nested(delim = "&"))+
+    scale_fill_carto_c(palette = "Earth",direction = 1,na.value="white") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 25, vjust = 1, hjust=1),
+          ggh4x.axis.nestline.y = element_line(size = 0.5), text= element_text(size = 25))+
+    xlab("Treatment after stressor phase") +
+    ylab("RpS3 genes with significant increase (positive)\n or decrease (negative) due to stressor") +
+    scale_y_discrete(labels = function(x) sapply(x, process_labels))
+ggsave("ES22_IMP_rps3_all_impacts_only_salinity_stressorphase_only.jpeg", width = 30, height = 25) ## For Figure
+
+```
+
+```{r sorted_heatmap_new}
+distance_df <- melt(as.matrix(dist_matrix))
+ES_dist.md <- with(meta, meandist(dist_matrix, name)) 
+
+meta$Var1 <- rownames(meta) 
+meta$Var2 <- rownames(meta)
+
+
+distance_df <- distance_df %>%
+  left_join(meta %>% select(-velocity,-salinity,-temperature,-Var2), by = "Var1") %>% 
+  dplyr::rename(Group_Var1 = name)%>% 
+  left_join(meta %>% select(-velocity,-salinity,-temperature,-Var1) , by = "Var2") %>% 
+  dplyr::rename(Group_Var2 = name)
+
+filtered_distances <- distance_df %>% 
+  filter(Var1 != Var2) 
+
+dup_rows <- duplicated(paste(pmin(filtered_distances$Var1, filtered_distances$Var2), 
+                             pmax(filtered_distances$Var1, filtered_distances$Var2)))
+
+filtered_data <- filtered_distances[!dup_rows, ]
+
+
+group_names <- unique(filtered_data$Group_Var1)
+
+p_values_wilcox <- matrix(NA, nrow = length(group_names), ncol = length(group_names), dimnames = list(group_names, group_names))
+for (i in 1:length(group_names)) {
+  for (j in 1:length(group_names)) {
+    p_values_wilcox[i, j] <- wilcox.test(filtered_data$value[filtered_data$Group_Var1 == group_names[i]],
+                             filtered_data$value[filtered_data$Group_Var1 == group_names[j]], exact = F, paired = F)$p.value
+  }
+}
+
+get_significance_label <- function(p_value) {
+  if (p_value < 0.001) {
+    return("***")
+  } else if (p_value < 0.01) {
+    return("**")
+  } else if (p_value < 0.05) {
+    return("*")
+  } else {
+    return("ns")
+  }
+}
+
+
+p_values_table_wilcox <- p_values_wilcox %>% 
+  as.data.frame() %>% 
+  rownames_to_column() %>% 
+  gather("Val2","p_value",-rowname) 
+
+p_values_table_wilcox$p_adjust <-  p.adjust(p_values_table_wilcox$p_value, method = "bonferroni") 
+
+p_values_table_wilcox <- p_values_table_wilcox %>% 
+  mutate(p_adjust = if_else(is.na(p_adjust), 1, p_adjust)) %>%
+  mutate(significance = sapply(p_adjust, get_significance_label)) %>% 
+  filter(significance != 'ns')
+
+
+triangular_all <- as.data.frame(ES_dist.md) %>% rownames_to_column("name") %>% gather("sample","values", -name)
+
+meta_samples <- meta %>% dplyr::rename(sample=name) %>% dplyr::rename(phase_sample = phase)
+
+
+merged_table_all <- merge(triangular_all, p_values_table_wilcox, by.x = c("name", "sample"), by.y = c("rowname", "Val2"), all.x = TRUE) %>% left_join(meta %>% select(name,phase)) %>% unique() 
+
+heatmap_sorting_table_name <- data.frame(name = c("V0S0T0S", "V-S0T0S", "V-S0T+S", "V-S+T0S","V-S+T+S","V0S0T+S", "V0S+T+S","V0S+T0S", "V0S0T0R", "V-S0T0R", "V-S0T+R", "V-S+T0R","V-S+T+R","V0S0T+R", "V0S+T+R","V0S+T0R")) %>% mutate(number = 1:16)
+heatmap_sorting_table_sample <- data.frame(sample = c("V0S0T0S", "V-S0T0S", "V-S0T+S", "V-S+T0S","V-S+T+S","V0S0T+S", "V0S+T+S","V0S+T0S", "V0S0T0R", "V-S0T0R", "V-S0T+R", "V-S+T0R","V-S+T+R","V0S0T+R", "V0S+T+R","V0S+T0R")) %>% mutate(number = 1:16)
+
+
+merged_table_sorted <-  merge(merged_table_all, heatmap_sorting_table_name, by = "name")
+merged_table_sorted <-  merge(merged_table_sorted, heatmap_sorting_table_sample, by = "sample")
+
+
+merged_table_sorted$number.x<- as.numeric(as.character(merged_table_sorted$number.x))
+merged_table_sorted$number.y<- as.numeric(as.character(merged_table_sorted$number.y))
+merged_table_sorted <- merged_table_sorted[order(merged_table_sorted$number.x),] 
+
+merged_table_sorted_for_half <- merged_table_sorted
+#merged_table_sorted_for_half <- merged_table_sorted_for_half[rev(rownames(merged_table_sorted_for_half)),]
+merged_table_sorted_for_half$values[duplicated(merged_table_sorted_for_half$values)] <- NA
+
+#merged_table_sorted_for_half <- merged_table_sorted_for_half[rev(rownames(merged_table_sorted_for_half)),]
+
+merged_table_sorted_for_half_plot <-merged_table_sorted_for_half %>%
+    mutate(significance = if_else(is.na(values), NA, significance)) %>% ggplot() +
+    aes(y = reorder(sample,-number.y), x = fct_inorder(name) , fill = values) +
+    geom_tile(colour='white' ) +
+  scale_fill_carto_c(palette = "Earth",  direction = 1,na.value="white") +
+  #  scale_fill_viridis_c(option = "inferno", direction = 1,na.value="white") +
+    theme_minimal() +
+   geom_text(aes(y = sample, x = name, label = significance),size=7)+
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+   # theme(axis.title.y = element_blank(), axis.ticks.y = element_blank(), axis.text.y =element_blank() )+
+    theme(text = element_text(size = 25))+
+    xlab("Treatment name with phase information") +
+    labs(fill = "Bray-Curtis-Dissimilarity")
+
+ggsave("ES22_IMP_rps3_dissimilarity_new_order.jpeg", width = 15, height = 10) ## For Figure
+```
+
+```{r top10_rpS3}
+top_10_com_wide <- dat_norm_round %>% as.data.frame() %>% 
+      rownames_to_column("taxid")%>% 
+    gather("sample", "coverage", -taxid) %>% 
+    group_by(taxid)%>%
+    summarise_at(vars(coverage),list(total_cov_sum=sum)) %>%
+    top_n(n = 10, wt = total_cov_sum) %>% 
+    left_join( dat_norm_round %>% as.data.frame()  %>% 
+      rownames_to_column("taxid"))%>% 
+    gather("sample", "coverage", -taxid, -total_cov_sum) %>% 
+    left_join(taxonomy_rpS3_header_names) %>% left_join(meta_no_index  %>% rownames_to_column("sample")) %>%
+   mutate(taxonomy = str_remove(taxonomy, "Taxonomy=")) %>% 
+  left_join(meta_no_index  %>% rownames_to_column("sample")) %>% group_by(taxid)
+
+ggplot(top_10_com_wide %>% mutate(control = ifelse(name =="V0S0T0", "control", "no control"))) +
+    aes(y = coverage, x = reorder(taxid,coverage), colour = phase,shape=control) +
+    geom_boxplot(mapping = aes(y = coverage, x = reorder(taxid,coverage), colour = phase),inherit.aes = F,outlier.shape  = NA)+
+    geom_jitter(alpha=0.5,position=position_jitterdodge(jitter.width = .1,dodge.width=0.75),size=2)+
+    scale_colour_carto_d(name="Phase",palette="Safe")+
+    scale_shape_manual(values = c(2,16))+
+    theme_bw()+
+    ylab("Normalized coverage [log10]") + xlab("Taxonomy of top 10 representative rpS3 genes over all samples")+ 
+    scale_x_discrete(labels=top_10_com_wide$taxonomy)+
+    stat_compare_means(aes(group = phase), label= "p.signif", method = "wilcox.test",size=8)+
+    coord_flip()+
+    scale_y_log10()+
+    theme(text = element_text(size = 20))+ guides(
+        colour = guide_legend(
+            title = "Phase",
+            override.aes = aes(label = "")
+        )
+    )
+ggsave("top_10_rpS3_clustered_normalized_rpS3_all_histogram_sign_control_shape.png", width = 20, height = 10) ##For Figure
+```

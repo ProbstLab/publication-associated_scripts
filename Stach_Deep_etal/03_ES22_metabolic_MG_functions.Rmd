@@ -1,0 +1,246 @@
+---
+title: "03_ES22_metabolic_MG_functions"
+output: html_document
+date: "2024-05-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library}
+library(tidyr)
+library(splitstackshape)
+library(rcartocolor)
+library(dplyr)
+library(TOSTER)
+library(ggplot2)
+library(permute)  
+library(tidyverse)
+library(vegan)
+```
+
+```{r }
+# Load your data
+setwd("XXXX") ###CHANGE PATH HERE
+data_raw <- read.delim("METABOLIC_result_worksheet1_all.tsv", header = F, stringsAsFactors = FALSE)  ### Metabolic output
+coverage <- read_tsv("ES22_IMP_all_overview.txt_only_cov_clean", progress = T,num_threads = 10, col_names = F)  ### Coverage per contig
+meta <- read.table("All_samples_meta.tsv", row.names=1, sep = "\t", header = T) ### Meta information
+bp_count <- read.table("paired_count_bp_read_min100bp.tsv_adapt.tsv", sep = "\t", header=T) ### Sequencing depth
+```
+
+
+```{r normalize}
+meta_no_index <- meta %>%
+  mutate(name = substr(name, 1, nchar(name) - 1))
+
+meta_no_index_rownames <- meta_no_index %>% rownames_to_column("Sample")
+
+
+normalize_table <- bp_count %>% 
+  select(file, sum_len) %>% 
+  dplyr::rename(sample = file) %>%
+  group_by(sample) %>% 
+  summarise_at(vars(sum_len),list(total_bp_sum=sum)) %>% 
+  mutate(min=min(total_bp_sum, na.rm = T)) %>% 
+  mutate_at(vars(total_bp_sum), funs(min=min/.))
+
+
+data_pcoa <- data_raw %>% select("V5","V11","V12","V13","V14")
+colnames(data_pcoa) <- c("HMM", "Presence","Count", "gene", "sample")
+
+colnames(coverage) <- c("contig", "coverage")
+
+data_pcoa$gene <- gsub(";", ",", data_pcoa$gene)
+testing <- cSplit(data_pcoa, "gene", sep=",", direction = "long")
+testing$contig <- sub("_[^_]*$", "", testing$gene)
+
+testing_add_coverage <- testing %>% select(-gene) %>% left_join(coverage) %>% filter(contig != "None")
+
+dat_norm <- testing_add_coverage %>% 
+  left_join(normalize_table) %>%
+  mutate(norm_coverage = coverage * min)
+
+dat_norm_summed_up_HMM <- dat_norm %>% 
+  select(sample,norm_coverage,HMM, contig) %>%
+  group_by(sample,HMM)%>%
+    summarise_at(vars(norm_coverage),list(sum_cov=sum))%>% 
+  unique() %>% 
+  spread("sample", "sum_cov") %>% 
+  column_to_rownames("HMM") 
+
+dat_norm_summed_up_HMM[is.na(dat_norm_summed_up_HMM)] <- 0
+
+
+dat_norm_counting_HMM_diversity <- dat_norm %>% 
+  filter(norm_coverage >= 1) %>%
+  select(sample,norm_coverage,HMM, contig) %>%
+  group_by(sample,HMM) %>% 
+  count() %>% 
+  unique() %>% 
+  spread("sample", "n") %>% 
+  column_to_rownames("HMM") 
+
+dat_norm_counting_HMM_diversity[is.na(dat_norm_counting_HMM_diversity)] <- 0
+```
+
+```{r statistics}
+
+dist_matrix_round <- vegdist(t(round(dat_norm_summed_up_HMM)), method="bray")
+meta2 <- meta  %>% mutate(velocity = as.factor(velocity), salinity = as.factor(salinity), temperature = as.factor(temperature), phase = as.factor(phase))
+dat_meta_cmb2 <- cbind(t(dat_norm_summed_up_HMM), meta2[, 2:5])
+dat_meta_cmb3 <- na.omit(dat_meta_cmb2)
+
+
+dist_matrix_round_diversity <- vegdist(t(round(dat_norm_counting_HMM_diversity)), method="bray")
+dat_meta_cmb2_diversity <- cbind(t(dat_norm_counting_HMM_diversity), meta2[, 2:5])
+dat_meta_cmb3_diversity <- na.omit(dat_meta_cmb2_diversity)
+
+adonis2(dist_matrix_round ~ temperature * salinity * velocity , data = meta_no_index, permutations = 999, by ="margin", strata = meta_no_index$phase)
+adonis2(dist_matrix_round ~ temperature * salinity +  velocity * salinity + velocity * temperature , data = meta_no_index, permutations = 999, by ="margin", strata = meta_no_index$phase)
+adonis2(dist_matrix_round ~ temperature +  velocity  + salinity , data = meta_no_index, permutations = 999, by ="margin", strata = meta_no_index$phase)
+
+```
+
+```{r toster}
+dat_meta_toster <- cbind(t(dat_norm_summed_up_HMM), meta2[, 1:5])
+
+data_raw_pathways <- data_raw %>% 
+  select(V1,V2,V3,V4,V5)  %>%
+  rename_with(~stringr::str_replace_all(.x, "-", "_"), .cols = everything())%>%
+  rename_with(~stringr::str_replace_all(.x, ",", ""), .cols = everything())%>%
+  rename_with(~stringr::str_replace_all(.x, " ", ""), .cols = everything()) 
+
+stressor_anova_toster <- dat_meta_toster %>%
+  rename_with(~stringr::str_replace_all(.x, "-", "_"), .cols = everything())%>%
+  rename_with(~stringr::str_replace_all(.x, ",", ""), .cols = everything())%>%
+  rename_with(~stringr::str_replace_all(.x, " ", ""), .cols = everything()) %>% 
+  select(-temperature, -phase, -salinity, -velocity)
+
+
+stressor_anova_toster2 <-stressor_anova_toster %>% rownames_to_column("sample")%>% gather("HMM","Count",-name,-sample)%>%
+    group_by(name) %>%
+    mutate(replicates = n_distinct(sample)) %>%
+    ungroup()   %>% group_by(HMM,name) %>% 
+    mutate(mean_count = mean(Count)) %>% 
+    mutate(sd_count = sd(Count))%>% 
+               select(-sample,-Count) %>%
+    unique()
+
+# Get unique values from the "name" column
+unique_names <- unique(stressor_anova_toster2$name)
+
+# Generate all possible pair combinations
+pair_combinations <- combn(unique_names, 2, simplify = TRUE)
+
+# Convert to a data frame
+pair_combinations_df <- data.frame(pair_combinations)
+pairs_to_compare <- as.list(pair_combinations_df)
+
+run_tost <- function(m1, m2, sd1, sd2, n1, n2, low_eqbound, high_eqbound) {
+  result <- TOSTtwo.raw(m1 = m1, m2 = m2, sd1 = sd1, sd2 = sd2, n1 = n1, n2 = n2,
+                        low_eqbound = low_eqbound, high_eqbound = high_eqbound,
+                        alpha = 0.05, var.equal = TRUE,plot = F,verbose = F)
+  return(result)
+}
+
+pooled_sqrt <-  function(sd1,sd2,n1,n2){
+  result <- sqrt((((n1-1)*sd1^2 + (n2-1)*sd2^2) / (n1+n2-2)))
+  return(result)
+}
+
+
+powerTOSTtwo.raw_adapt <- function (alpha, statistical_power, N, sdpooled, low_eqbound, 
+    high_eqbound, delta = 0) 
+{
+    if (missing(low_eqbound) && missing(high_eqbound)) {
+        low_eqbound <- -sqrt(2 * (qnorm(1 - alpha) + qnorm(1 - 
+            ((1 - statistical_power)/2)))^2/N) * sdpooled
+        high_eqbound <- sqrt(2 * (qnorm(1 - alpha) + qnorm(1 - 
+            ((1 - statistical_power)/2)))^2/N) * sdpooled
+        bounds <- c(low_eqbound, high_eqbound)
+        return(bounds)
+    }
+}
+
+bounds <- function(sdpooled) {
+  result <- powerTOSTtwo.raw(0.05,0.33,4,sdpooled)
+}
+
+
+run_equivalence_testing <- function(pair) {
+  result <- stressor_anova_toster2 %>%
+    filter(name %in% pair) %>%
+    group_by(HMM) %>%
+    filter(
+      !any(is.na(mean_count) | mean_count == 0 | is.na(sd_count) | sd_count == 0)
+    ) %>%
+    summarize(
+      tost_result = list({
+        if (all(sd_count > 0)) {
+          
+          sdpooled_result <- pooled_sqrt(sd_count[1],sd_count[2],replicates[1],replicates[2])
+  
+          # Calculate low_eqbound and high_eqbound using powerTOSTtwo.raw
+          bound_result <- powerTOSTtwo.raw_adapt(
+            0.05, 
+            0.33, 
+            4,
+            sdpooled_result
+          )
+          
+          low_eqbound <- bound_result[1]
+          high_eqbound <- bound_result[2]
+          
+          run_tost(mean_count[1], mean_count[2], sd_count[1], sd_count[2], n1 = replicates[1], n2 = replicates[2], low_eqbound = low_eqbound, high_eqbound = high_eqbound)
+        } else {
+          list(TOST_p1 = NA, TOST_p2 = NA, conclusion = "Not enough data")
+        }
+      })
+    )
+
+  result %>%
+    mutate(
+      pair = paste(pair, collapse = " vs "),
+      p_value_1 = map_dbl(tost_result, "TOST_p1"),
+      p_value_2 = map_dbl(tost_result, "TOST_p2"),
+      both_significant = ifelse(p_value_1 < 0.05 & p_value_2 < 0.05, "equal", NA)
+    )
+}
+
+
+result_tables <- map(pairs_to_compare, run_equivalence_testing)
+final_result_table <- bind_rows(result_tables)
+```
+
+```{r plotting}
+for_plot_count_combinations_Stress<-final_result_table %>% filter(both_significant == "equal") %>%
+    filter(!str_detect(pair, "R")) %>% 
+    left_join(data_raw_pathways %>% dplyr::rename(HMM =V5 )) %>% unique() %>%
+    separate(pair, into = c("sample1", "sample2"), sep = " vs ", remove = FALSE) %>% 
+  group_by(sample1,sample2) %>% 
+  summarize(n =n())
+
+for_plot_count_combinations_Stress_duplicate <- for_plot_count_combinations_Stress %>%
+  dplyr::rename(sample2 = sample1, sample1 = sample2)
+
+for_plot_count_combinations_Stress_deduplicated <- bind_rows(for_plot_count_combinations_Stress, for_plot_count_combinations_Stress_duplicate) %>% unique()
+
+mat <- for_plot_count_combinations_Stress_deduplicated  %>%
+  arrange(sample1,n)%>% 
+ spread("sample2","n") %>% column_to_rownames("sample1") 
+mat[lower.tri(mat)] <- NA
+
+ES22_IMP_metabolic_equivalen_HMM_counts_half <-mat %>% rownames_to_column("sample1") %>% gather("sample2","n",-sample1) %>% 
+    ggplot() +
+    aes(x = reorder(sample1,-n), y = reorder(sample2,-n), fill = n) +
+    geom_tile() +
+ scale_fill_carto_c(palette = "Earth",direction = 1,na.value="white")+    theme_bw()+
+    xlab("Treatment compared A") +
+    ylab("Treatment compared B")  +
+    labs(fill = "Equivalent abundant\nencoded functions")+ 
+  ggtitle("A) MG functional HMMs")+ theme(axis.text.x = element_text(angle = 320, vjust = 1, hjust=0))
+  
+ggsave("ES22_IMP_metabolic_equivalen_HMM_counts_half.jpeg", width = 9, height = 8) ## For plot
+
+```
