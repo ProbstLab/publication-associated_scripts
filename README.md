@@ -7,4 +7,3 @@ This repository contains scripts associated with specific publications as well a
 
 
 1) Figueroa-Gonzalez_Bornemann_etal
-2) Stach_Deep_etal
