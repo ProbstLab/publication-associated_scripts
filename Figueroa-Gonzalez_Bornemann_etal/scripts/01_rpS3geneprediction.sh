@@ -34,7 +34,7 @@ then
 	exit 1
 fi
 
-fna=$1
+faa=$1
 blast=$2
 threads=10
 echo "finding rpS3 genes..."
@@ -49,7 +49,7 @@ egrep "[Rr]ibosomal [Pp]rotein S3[ Pp]" $blast  | awk '{print$1}' > rpS3_grep.hi
 
 cat rpS3_hmm.hits  rpS3_grep.hits | sort | uniq > rpS3.hits
 
-cat rpS3.hits | pullseq -N -i $fna > rps3_hits.fna
+cat rpS3.hits | pullseq -N -i $faa > rps3_hits.faa
 rm rpS3_hmm.hits  rpS3_grep.hits rpS3.hits
 
 
