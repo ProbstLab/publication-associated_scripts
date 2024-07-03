@@ -27,15 +27,17 @@ if [ "$#" -lt 2 ]
 then
 	echo "Use phylosift rpS3 hmm as well as grep in FunTaxDB output to ID rpS3 genes and extract the geneid"
 	echo "extract gene sequences in nucleotide format for rps3 sequences for subsequent clustering"
-  	echo "usage: rabd.sh <proteins.faa> <blast output of proteins>"
+  	echo "usage: 01_rpS3geneprediction.sh <proteins.faa> <blast output of proteins> <genes.fna>"
 	echo "requires phylosift hmm for rps3 220120_rpS3_DNGNGWU00028.hmm to be in the subfolder ./bin/220120_rpS3_DNGNGWU00028.hmm relative to the script location."
 	echo "hmm was downloaded on the 20th of Jan 2022, hence the 220120 prefix"
 	echo "requires pullseq software https://github.com/bcthomas/pullseq"
+        echo "Since the HMM profiles are trained on amino acid data but we cluster rps3 nucleotide sequences, we need both the proteins.faa and genes.fna files"
 	exit 1
 fi
 
 faa=$1
 blast=$2
+fna=$3
 threads=10
 echo "finding rpS3 genes..."
 
@@ -49,7 +51,8 @@ egrep "[Rr]ibosomal [Pp]rotein S3[ Pp]" $blast  | awk '{print$1}' > rpS3_grep.hi
 
 cat rpS3_hmm.hits  rpS3_grep.hits | sort | uniq > rpS3.hits
 
-cat rpS3.hits | pullseq -N -i $faa > rps3_hits.faa
+## before the following pullseq command, all commands proteins.faa files, however, we here want to extract fna sequences of rps3 genes, thus the file input for pullseq is the genes.fna file
+cat rpS3.hits | pullseq -N -i $fna > rps3_hits.fna
 rm rpS3_hmm.hits  rpS3_grep.hits rpS3.hits
 
 
