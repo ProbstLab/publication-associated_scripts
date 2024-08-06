@@ -254,7 +254,7 @@ bash 06_combination_rps3adjmetadata_clusteringmetadata.sh
 
 Will create a combined output file to select representative sequences
 on, called
-Sample2tablescancat_rps3_clustertype2clusternum2geneid_combined_Cin1stcolrowsrem.txt
+Sample2tablescancat_rps3_clustertype2clusternum2geneid_combined_Cinfirstcolrowsremoved.txt
 
 4.3  **Description**
 
