@@ -44,7 +44,7 @@
 #===============================================================================
 
 set -o nounset                              # Treat unset variables as an error
-awk -F"\t" '{
+gawk -F"\t" '{
              if($2 in set ==0){
 		               set[$2]["Clustertype"]=$1
 			       set[$2]["Geneid"]=$3
