@@ -40,5 +40,5 @@
 
 set -o nounset                              # Treat unset variables as an error
 awk 'FNR!=1 && NR==FNR {set[$2]=$0} FNR !=NR && FNR!=1 {print $0"\t"set[$3]}' Sample2tablescancat.txt  rps3_clustertype2clusternum2geneid.txt  > Sample2tablescancat_rps3_clustertype2clusternum2geneid_combined.txt
-cat  Sample2tablescancat_rps3_clustertype2clusternum2geneid_combined.txt | egrep -v "^C" >  Sample2tablescancat_rps3_clustertype2clusternum2geneid_combined_Cin1stcolrowsrem.txt
+cat  Sample2tablescancat_rps3_clustertype2clusternum2geneid_combined.txt | egrep -v "^C" >  Sample2tablescancat_rps3_clustertype2clusternum2geneid_combined_Cinfirstcolrowsremoved.txt
 rm Sample2tablescancat_rps3_clustertype2clusternum2geneid_combined.txt
