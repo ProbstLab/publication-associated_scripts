@@ -1,0 +1,205 @@
+---
+title: "Amplicon 16S"
+output: html_document
+date: '2023-11-23'
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+if (!require("vegan", quietly = TRUE)) install.packages("vegan")
+if (!require("stringr", quietly = TRUE)) install.packages("stringr")
+library(BiocManager)
+BiocManager::install("microbiome")
+```
+
+```{r}
+
+library(DESeq2) #normalize data
+library(phyloseq) #create phyloseq object
+library(dendextend) #color clusters branches in hierarchical clustering
+library(ade4) #euclidean transformation of bray distances for pcoa
+library(ggplot2)
+library(ggforce) #ellipse with less than 4 points
+library(dbplyr)
+library(tidyverse)
+library(vegan)
+library(reshape2)
+library(stringr)
+library(ggpubr)
+library(cowplot)
+```
+
+```{r}
+#setwd("/home/aman/sciebo - Deep, Aman (adj470c@uni-duisburg-essen.de)@uni-duisburg-essen.sciebo.de/2023/data_analysis/ExStream_2022_Amplicon_sediment/")
+```
+
+# load files  and edit taxa
+```{r}
+
+countData <- read.csv("full_table_mumu_filter.csv", header = TRUE, sep = "," , row.names = 1)
+metaData <- read.csv("metadata.csv", header = TRUE, sep = "," , row.names = 1)
+otu.filt <- countData[grepl("Bacteria", countData$taxonomy),]
+otu_mat <- otu.filt %>% dplyr:: select(starts_with("ES"))
+taxonomy <- otu.filt
+taxonomy[c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species")] <- str_split_fixed(taxonomy$taxonomy, ';', 7) #divide taxonomy column in 8 columns]
+taxonomy <- data.frame(taxonomy[, -c(1:65)]) #remove all other columns
+```
+#filtering OTUs
+```{r}
+min_otu_occurence <- 2
+min_reads <- 100
+empty_vec <- c()
+for (i in 1:NROW(otu_mat)){
+  if (sum(otu_mat[i, (1:NCOL(otu_mat))]) > min_reads){
+    empty_vec<-c(empty_vec,i)
+  }
+}
+otu_mat <- otu_mat[empty_vec,]
+
+#filter by minimum otu presence in x samples
+otu_mat.pa <- otu_mat[,1:NCOL(otu_mat)]
+otu_mat.pa <- decostand(otu_mat.pa, "pa")
+table(rowSums(otu_mat.pa))
+otu_mat$otu_pa <- rowSums(otu_mat.pa)
+otu_mat <- otu_mat[otu_mat$otu_pa > (min_otu_occurence-1), ]
+min(otu_mat$otu_pa)
+otu_mat$otu_pa <- NULL
+
+```
+
+#filter stress and recovery
+```{r}
+complete<-cbind(t(otu_mat), metaData)
+stress_sample<- complete %>% filter(str_detect(Phase,"stress"))
+recovery_sample<- complete %>% filter(!str_detect(Phase,"stress"))
+meta_recovery <- recovery_sample %>% select(Phase, Velocity, Channel, Temperature, name, Salinity)
+meta_stress <- stress_sample %>% select(Phase, Velocity, Channel, Temperature, name, Salinity)
+stress_sample <- stress_sample %>%  select(-Phase, -Velocity, -Channel, -Temperature, -name, -Salinity) %>%  t()
+recovery_sample <- recovery_sample %>%  select(-Phase, -Velocity, -Channel, -Temperature, -name, -Salinity) %>%  t()
+
+####phyloseq stress and recovery
+
+phy.taxonomy <- tax_table(as.matrix(taxonomy))
+phy.info <- sample_data(metaData)
+phy.otu.ab <- otu_table(stress_sample, taxa_are_rows=T)
+phy.ab.stress <- phyloseq(phy.otu.ab, phy.taxonomy, phy.info)
+
+phy.otu.ab <- otu_table(recovery_sample, taxa_are_rows=T)
+phy.ab.recov <- phyloseq(phy.otu.ab, phy.taxonomy, phy.info)
+
+color <- c("plum4", "skyblue3", "tan3", "pink3", "aquamarine3", "khaki2")
+
+```
+
+#distance matrix
+```{r}
+dist.bray <- vegdist(t(otu_mat), method="bray")
+bray.matrix <- as.matrix(dist.bray, labels=T)
+
+dist.euc <- vegdist(t(otu_mat), method="euclidean") #zeros are counted as similarity
+euc.matrix <- as.matrix(dist.euc, labels=T)
+```
+
+# alpha diversity
+```{r}
+theme_blank=theme(
+    text = element_text(size =25),  # Increase label text size
+    plot.background = element_rect(fill = "white"),  # Set background to white
+    panel.background = element_rect(fill = "white"),  # Set panel background to white
+    legend.background = element_rect(fill = "white"),  # Set legend background to white
+    legend.title = element_text(size = 25),  # Increase legend title text size
+    legend.text = element_text(size = 25),  # Increase legend text size
+    panel.border = element_rect(color = "black", fill = NA, size = 1),
+    #panel.grid.minor = element_blank(),
+    #panel.grid.major = element_blank(),
+    axis.line = element_line(colour = "black")
+  )
+
+alpha_meas = c("Observed", "Chao1", "ACE", "Shannon", "Simpson", "InvSimpson")
+
+p <- plot_richness(phy.ab.stress, "Velocity", measures= "Simpson", color="Velocity")
+
+p +  geom_boxplot() + theme_blank
+
+```
+
+# significance test stressor phase++-
+
+```{r}
+
+deseq_counts <- DESeqDataSetFromMatrix(recovery_sample, colData = meta_recovery, design =~1)
+deseq_counts_vst <- varianceStabilizingTransformation(deseq_counts)
+vst_trans_count_tab <- assay(deseq_counts_vst)
+euc_dist <- dist(t(vst_trans_count_tab))
+euc_clust <- hclust(euc_dist, method="ward.D2")
+adonis2(euc_dist~Velocity*Salinity*Temperature, meta_recovery, permutations=999, method="bray", sqrt.dist=FALSE)
+adonis2(euc_dist~Velocity*Salinity*Temperature, meta_recovery, permutations=999, by = "margin")
+adonis2(euc_dist~Velocity + Salinity+ Temperature, meta_recovery, permutations=999, by = "margin")
+adonis2(euc_dist~Velocity*Salinity + Temperature*Salinity + Velocity*Temperature, meta_recovery, permutations=999, by = "margin")
+```
+#NMDS
+```{r}
+deseq_counts <- DESeqDataSetFromMatrix(recovery_sample, colData = meta_recovery, design =~1)
+deseq_counts_vst <- varianceStabilizingTransformation(deseq_counts)
+vst_trans_count_tab <- assay(deseq_counts_vst)
+
+euc_dist <- dist(t(vst_trans_count_tab))
+nmds<-metaMDS(euc_dist)
+plot(nmds)
+
+data.scores <- as.data.frame(scores(nmds)) %>% cbind(meta_recovery)
+nmds$stress
+ggplot(data.scores) +
+ aes(x = NMDS1, y = NMDS2, colour = name, group = Velocity, fill = Velocity, shape = Velocity) +
+ geom_point( size = 4) +
+ theme_bw(base_size = 22)+
+ stat_ellipse(geom = "polygon", type="norm", level=0.75, alpha=0.2, show.legend = T)+
+  xlab("NMDS1") +
+  ylab("NMDS2")  +
+  annotate("text", x = Inf, y = Inf, label = paste("Stress value:", round(nmds$stress,digits = 4)), 
+           hjust = 1, vjust = 1.1, size = 7, color = "black") +
+  labs(title = "B) Recovery phase", size=9)
+```
+ 
+#GLS model
+```{r}
+library(car)
+
+richness = specnumber(t(stress_sample))
+df = as.data.frame(richness)
+df$shannon=diversity(t(stress_sample), index="shannon")
+df$simp=diversity(t(stress_sample), index="simpson")
+df$inv=diversity(t(stress_sample), index="shannon")
+df$eveness = df$shannon/log(df$richness)
+
+
+df2<- cbind(df,meta_stress)
+
+df2$Velocity<-factor(df2$Velocity, levels = c("normal", "reduced"))
+df2$Temperature<-factor(df2$Temperature, levels = c("normal", "increased"))
+df2$Salinity<-factor(df2$Salinity, levels=c("background", "salt"))
+
+leveneTest(df2$richness, df2$Temperature)
+leveneTest(df2$richness, df2$Salinity)
+leveneTest(df2$richness, df2$Velocity) # velocity has significant variance than other treatment
+
+library(nlme)
+
+contrasts(df2$Velocity)  <- contr.sum(2)
+contrasts(df2$Salinity)  <- contr.sum(2)
+contrasts(df2$Temperature)  <- contr.sum(2)
+vf2 <- varIdent(form= ~ 1|Velocity)
+M.gls2_even<-gls(inv~Salinity*Temperature*Velocity,data=df2, weights = vf2)
+plot(M.gls2_even)
+summary(M.gls2_even)
+
+```
+
+
+
+

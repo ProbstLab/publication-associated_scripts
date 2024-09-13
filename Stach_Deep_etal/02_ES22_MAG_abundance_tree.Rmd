@@ -1,0 +1,359 @@
+---
+title: "02_ES22_MAG_tree_abundance"
+output: html_document
+date: "2024-05-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library}
+library(vegan) 
+library(permute)  
+library(tidyverse)
+library(ggplot2)
+library(rcartocolor)
+library(GUniFrac)
+```
+
+```{r load_data}
+setwd("XXX")
+
+dat_mean <- read.table("ES22_IMP_S_coverage_counts_75_10.tsv", sep = "\t",  header=T) ## Coverage from coverm for drep MAGs
+meta_no_index <- read.table("All_samples_meta.tsv", sep = "\t", header = T) %>% 
+ mutate(name = substr(name, 1, nchar(name) - 1)) ## Meta_info 
+
+bac_classy  <- read.table("gtdbtk.bac120.summary.tsv", sep = "\t",  header=T) %>% dplyr::rename(Genome = user_genome) %>% select(Genome, classification) ## gtbtk_info
+```
+
+```{r modify_mean}
+my.freq = function(x){
+  #just calculating the frequency. I prefer to make my functions outside of chains
+  x / sum(x)
+}
+
+relative_coverage <- dat_mean %>% mutate(across(.cols = starts_with("E"), .fns = my.freq, .names = "{.col}")) 
+
+mean_coverM <- relative_coverage %>% dplyr::rename(Genome=genome)%>% gather("sample","coverage",-Genome) 
+
+
+  
+#meta2 <- meta  %>% mutate(velocity = as.factor(velocity), salinity = as.factor(salinity), temperature = as.factor(temperature), phase = as.factor(phase))
+mean_coverM_meta_cmb2 <- merge(mean_coverM,meta_no_index, by= "sample") 
+
+
+mean_coverM_meta_cmb2_no_unmapped <- mean_coverM_meta_cmb2 %>% filter(Genome != "unmapped") #%>% filter(relative_abundance > 0.001)# %>% mutate(relative_abundance = log10(relative_abundance))
+mean_coverM_meta_cmb2_no_unmapped$Genome <-  gsub(".fasta","",mean_coverM_meta_cmb2_no_unmapped$Genome)
+```
+
+```{r gtdbtk_mean}
+
+gtdb_clean <- bac_classy
+gtdb_clean$classification <- gsub("d__","", gtdb_clean$classification)
+gtdb_clean$classification <- gsub("p__","", gtdb_clean$classification)
+gtdb_clean$classification <- gsub("c__","", gtdb_clean$classification)
+gtdb_clean$classification <- gsub("o__","", gtdb_clean$classification)
+gtdb_clean$classification <- gsub("f__","", gtdb_clean$classification)
+gtdb_clean$classification <- gsub("g__","", gtdb_clean$classification)
+gtdb_clean$classification <- gsub("s__","", gtdb_clean$classification)
+
+gtdb_clean$classification_keep <- gtdb_clean$classification
+
+gtdb_clean2 <- gtdb_clean %>% select(Genome, classification_keep, classification) %>% separate(classification, c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species"))
+
+mean_coverM_meta_cmb2_no_unmapped_genome_info <- merge(mean_coverM_meta_cmb2_no_unmapped, gtdb_clean2, by="Genome")
+
+```
+
+```{r linear_model}
+##For stressor phase only
+mean_coverM_meta_cmb2_no_unmapped_rename <- mean_coverM_meta_cmb2_no_unmapped
+
+
+mean_coverM_meta_cmb2_no_unmapped_rename$Genome <-  gsub("-","_",mean_coverM_meta_cmb2_no_unmapped_rename$Genome)
+mean_coverM_meta_cmb2_no_unmapped_rename$Genome <-  gsub("\\.","_",mean_coverM_meta_cmb2_no_unmapped_rename$Genome)
+
+
+stressor_anova <- mean_coverM_meta_cmb2_no_unmapped_rename %>% filter(mean_coverM_meta_cmb2_no_unmapped_rename$phase=="stress") %>% spread("Genome","coverage")
+
+
+transformed_OTU_stress <- stressor_anova %>% select(-temperature, -phase, -salinity, -velocity,-name) %>% column_to_rownames("sample")
+result_table_stress <- data.frame(OTU = character(),
+                           Stressor = character(),
+                           P_Value = numeric(),
+                           stringsAsFactors = FALSE)
+
+
+for (otu_name in colnames(transformed_OTU_stress)[-1]) {
+  
+  paste(otu_name)
+  anova_model <- aov(as.formula(paste(otu_name, "~ temperature * salinity * velocity")), data = stressor_anova)
+  
+  
+  p_values <- summary(anova_model)[[1]]$`Pr(>F)`
+  
+  p_values <- p.adjust(p_values,method = "bonferroni")
+  
+  
+  main_effects <- p_values[1:3]
+  
+  
+  interaction_effect <- p_values[4:7]
+  
+  
+  otu_result <- data.frame(OTU = otu_name,
+                           Stressor = c("temperature", "salinity", "velocity","temperature:salinity","temperature:velocity","salinity:velocity","temperature:salinity:velocity"),
+                           P_Value = c(main_effects, interaction_effect),
+                           stringsAsFactors = FALSE)
+  
+
+  result_table_stress <- rbind(result_table_stress, otu_result)
+}
+
+result_table_stress_adj <-result_table_stress
+
+result_table_stress_p_adj_u_005 <- result_table_stress_adj %>% subset(P_Value < 0.05)%>%  dplyr::rename(taxid = OTU)
+
+
+MAGs_overview_tax <- mean_coverM_meta_cmb2_no_unmapped_genome_info %>% select(Genome, classification_keep)%>% unique() %>% dplyr::rename(taxid = Genome)
+MAGs_overview_tax$taxid <-  gsub("-","_",MAGs_overview_tax$taxid)
+MAGs_overview_tax$taxid <-  gsub("\\.","_",MAGs_overview_tax$taxid)
+
+result_table_stress_p_adj_u_005_tax <- left_join(result_table_stress_p_adj_u_005,MAGs_overview_tax, by= "taxid") 
+
+
+## Next step -> perform posthoc test on those that were significant according to 
+
+stressor_anova_rename <- stressor_anova
+stressor_anova_rename$temperature <- str_replace_all(stressor_anova_rename$temperature,"normal","Tbackground")
+stressor_anova_rename$temperature <- str_replace_all(stressor_anova_rename$temperature,"increased","Tincreased")
+stressor_anova_rename$salinity <- str_replace_all(stressor_anova_rename$salinity,"background","no_salinity")
+stressor_anova_rename$velocity <- str_replace_all(stressor_anova_rename$velocity,"normal","normal_flow")
+stressor_anova_rename$velocity <- str_replace_all(stressor_anova_rename$velocity,"reduced","reduced_flow")
+
+
+significant_stress <- result_table_stress_p_adj_u_005_tax$taxid 
+
+result_table_stress_tukey_HSD <- data.frame(OTU = character(),
+                           name = character(),
+                           "p adj" = numeric(),
+                           stringsAsFactors = FALSE,
+                           diff=numeric())
+
+for (otu_name in significant_stress) {
+
+   anova_model <- aov(as.formula(paste(otu_name, "~ temperature * salinity * velocity")), data = stressor_anova_rename)
+
+
+  tukey_results <- TukeyHSD(anova_model)
+  
+  tukey_results_table <- as.data.frame(do.call(rbind, tukey_results))
+  tukey_results_table$name <- row.names(tukey_results_table)
+  tukey_results_table$OTU <- otu_name
+  tukey_results_table <- tukey_results_table[, c("p adj","name","OTU","diff")]
+
+
+  result_table_stress_tukey_HSD <- rbind(result_table_stress_tukey_HSD, tukey_results_table)
+}
+
+
+result_table_stress_tukey_HSD_005 <- result_table_stress_tukey_HSD %>% subset(result_table_stress_tukey_HSD$`p adj`< 0.05) %>%  dplyr::rename(taxid = OTU)
+result_table_stress_tukey_HSD_005_tax <- merge(result_table_stress_tukey_HSD_005,MAGs_overview_tax, by= "taxid")
+
+
+result_table_stress_tukey_HSD_005_tax_adj <- result_table_stress_tukey_HSD_005_tax
+result_table_stress_tukey_HSD_005_tax_adj$BHadj <-  p.adjust(result_table_stress_tukey_HSD_005_tax$`p adj`,method = "BH")
+```
+```{r select_significant}
+
+significant_OTUs_stressor <- result_table_stress_tukey_HSD_005_tax_adj$taxid %>% unique()
+raw_relative_gather_selected_significant <- mean_coverM_meta_cmb2_no_unmapped_rename %>% filter(Genome %in% significant_OTUs_stressor)
+
+
+result_table_stress_tukey_HSD_005_tax_uniq <- result_table_stress_tukey_HSD_005_tax %>% unique()
+
+result_table_stress_tukey_HSD_005_tax_uniq_lowest_value <- result_table_stress_tukey_HSD_005_tax_uniq  %>% 
+  group_by(taxid) %>% 
+  filter(`p adj` == min(`p adj`))  %>%
+  separate(name, into = c("stressor_set1", "stressor_set2"), sep = "-") %>% 
+  mutate(stressor_change_temp = ifelse((str_detect(stressor_set1, "Tbackground") & str_detect(stressor_set2, "Tincreased")) |
+                                    (str_detect(stressor_set1, "Tincreased") & str_detect(stressor_set2, "Tbackground")), 
+                                    "temperature_change", "")) %>% 
+  mutate(stressor_change_flow = ifelse((str_detect(stressor_set1, "reduced_flow") & str_detect(stressor_set2, "normal_flow")) |
+                                    (str_detect(stressor_set1, "normal_flow") & str_detect(stressor_set2, "reduced_flow")), 
+                                    "flow_change", ""))  %>% 
+  mutate(stressor_change_sal = ifelse((str_detect(stressor_set1, "salt") & str_detect(stressor_set2, "no_salinity")) |
+                                    (str_detect(stressor_set1, "no_salinity") & str_detect(stressor_set2, "salt")), 
+                                    "salt_change", "")) %>% 
+  unite(combined_column, stressor_change_temp, stressor_change_flow, stressor_change_sal, sep = '+', remove = T, na.rm = TRUE) %>% 
+ mutate(combined_column = str_replace(combined_column, "^\\+|\\+$", "")) %>% 
+   mutate(combined_column = str_replace(combined_column, "^\\+|\\+$", "")) %>% 
+  select(taxid, `p adj`, combined_column,diff)
+
+      
+raw_relative_gather_selected_significant_for_plot <- raw_relative_gather_selected_significant %>% 
+    group_by(name,phase,Genome)%>%
+    summarise_at(vars(coverage),list(mean_cov=mean))%>%
+    left_join(MAGs_overview_tax %>% dplyr::rename(Genome=taxid)) %>%
+    group_by(name,phase,classification_keep)%>%
+    summarise_at(vars(mean_cov),list(sum_cov=sum)) %>% 
+    left_join(meta_no_index) %>% 
+    unique()  %>%
+    group_by(classification_keep) %>% 
+     mutate(zscore = (sum_cov - mean(sum_cov))/sd(sum_cov))
+    
+raw_relative_gather_selected_significant_for_plot_sorted <- raw_relative_gather_selected_significant_for_plot[order(raw_relative_gather_selected_significant_for_plot$temperature,raw_relative_gather_selected_significant_for_plot$velocity),]
+
+
+color_mapping <- c(
+ "temperature_change" = "#e31a1c",                        
+ "temperature_change+flow_change+salt_change" ="#ff7f00",
+ "flow_change"= "#b15928",
+ "flow_change+salt_change"= "#6a3d9a",
+ "salt_change"= "#a6cee3",
+ "temperature_change+flow_change" =  "#33a02c",
+ "temperature_change++salt_change"="#1f78b4"
+) 
+
+merging_MAG_tax_for_significant <- result_table_stress_tukey_HSD_005_tax_uniq_lowest_value[order(result_table_stress_tukey_HSD_005_tax_uniq_lowest_value$combined_column, decreasing=F),] %>% 
+  left_join(MAGs_overview_tax ) %>% 
+  select(classification_keep) %>% 
+  unique() %>% 
+  tibble::rowid_to_column(., "ID") %>%  
+  right_join(raw_relative_gather_selected_significant_for_plot) %>% 
+  left_join(result_table_stress_tukey_HSD_005_tax_uniq_lowest_value %>%            
+  select(-'p adj')) %>%
+  mutate(color_column = color_mapping[combined_column]) %>% 
+  mutate(combined_column = str_replace(combined_column,"\\+\\+", "+"))
+
+
+merging_MAG_tax_for_significant_sorted <- merging_MAG_tax_for_significant[order(merging_MAG_tax_for_significant$combined_column),]
+
+
+numColors <- length(levels(merging_MAG_tax_for_significant_sorted$combined_column)) # How many colors you need
+getColors <- scales::brewer_pal('qual') # Create a function that takes a number and returns a qualitative palette of that length (from the scales package)
+myPalette <- getColors(7)
+names(myPalette) <- unique(merging_MAG_tax_for_significant_sorted$combined_column)
+
+
+
+
+merging_MAG_tax_for_significant_sorted %>% 
+    filter(sum_cov > 0.001) %>% 
+    ggplot() +
+    aes(x = name, y = fct_inorder(paste0(classification_keep, "&", combined_column)), size = zscore,fill = sum_cov) +
+    geom_point(shape = 21, stroke = 0) +
+    scale_radius(range=c(1,15))+
+    guides(y = ggh4x::guide_axis_nested(delim = "&"))  +
+    scale_fill_carto_c(palette = "Earth",direction = 1,na.value="white")+    theme_bw()+
+    theme_minimal() +
+    facet_grid(scales = "free_x",~factor(phase,levels=c("stress","recovery")))+
+    theme(axis.text.x = element_text(angle = 25, vjust = 1, hjust=1),
+          ggh4x.axis.nestline.y = element_line(size = 0.5)) +
+    xlab("Treatment split by phase") + 
+    ylab("Annotation of MAGs with significant increase due to stressor") +
+    guides(size = guide_legend(override.aes = list(fill = NA, color = "black", stroke = .5), 
+                               label.position = "bottom",
+                               title.position = "right", 
+                               order = 1))+
+    labs(size = " ", fill= " ")
+ggsave("ES22_IMP_MAGs_significant_relative_abundance.jpeg", width = 15, height = 8) ## For Figure Supplementary
+```
+```{r library_tree}
+library(ggtreeExtra)
+library(ggstar)
+library(ggplot2)
+library(ggtree)
+library(ggsci)
+library(treeio)
+library(cowplot)
+library(scales)
+library(tidyverse)
+library(ggnewscale)
+```
+
+```{r tree}
+tree <- read.tree("gtdbtk.unrooted.tree") ## gtbtk_tree
+compl_cont <- read.table("checkm2_quality_report.tsv", sep = "\t",  header=T) %>% select(Name,Completeness,Contamination,Genome_Size) ## checkm_2
+
+QA_TAble<- read.csv("ES22_IMP_overview_MAGs_annotationpip.tsv", sep = "\t",  header=T)  %>% select(Bin.Id,Strain.heterogeneity)  ## Strain heterogeneity from checkm1
+
+
+p1 <- ggtree(tree, layout="circular", open.angle=10, size=0.5)
+
+p2<- p1 + new_scale_fill() +
+      geom_fruit(
+          offset =  0.1,
+          data=gtdb_clean2,
+          geom=geom_star,
+          mapping=aes(y=Genome, fill=Phylum, starshape='test'),
+          position="identity", size=3,
+          starstroke=.2) + 
+      scale_starshape_manual(
+          values=c(15),
+          guide="none")              + 
+      scale_fill_npg(guide=guide_legend(
+                    override.aes=list(starshape=15),
+                    order=1, text.size=6)) +
+      theme(#legend.position=c(0.96, 0.5), # the position of legend.
+          legend.background=element_rect(fill=NA), # the background of legend.
+          legend.title=element_text(size=9), # the title size of legend.
+          legend.text=element_text(size=8), # the text size of legend.
+          legend.spacing.y = unit(0.01, "cm")  # the distance of legends (y orientation).
+      )
+
+compl_table <- compl_cont %>% select(Name,Completeness)
+contam_table <- compl_cont %>% select(Name,Contamination)
+result_table_stress_tukey_HSD_005_tax_uniq_lowest_value_sig_change <-result_table_stress_tukey_HSD_005_tax_uniq_lowest_value  %>% mutate(combined_column = sub("flow_change", "flow velocity", combined_column)) %>% mutate(combined_column = sub("temperature_change", "temperature", combined_column)) 
+
+get_significance_label <- function(p_value) {
+  if (p_value < 0.001) {
+    return("***")
+  } else if (p_value < 0.01) {
+    return("**")
+  } else if (p_value < 0.05) {
+    return("*")
+  } else {
+    return("ns")
+  }
+}
+
+result_table_stress_tukey_HSD_005_tax_uniq_lowest_value_sig_change_sig_labels <- result_table_stress_tukey_HSD_005_tax_uniq_lowest_value_sig_change %>% 
+  mutate(significance = sapply(`p adj`, get_significance_label)) 
+
+result_table_stress_tukey_HSD_005_tax_uniq_lowest_value_sig_change_sig_labels$taxid <- gsub("WHONDRS_S19S","WHONDRS-S19S", result_table_stress_tukey_HSD_005_tax_uniq_lowest_value_sig_change_sig_labels$taxid)
+  
+
+
+
+p3 <- p2+ new_scale_fill() + 
+    geom_fruit(
+        data=compl_table,
+        geom=geom_tile, offset = 0.04,size = 0.01,
+        mapping=aes(y=Name, fill=Completeness, x=0, height=.9, width=.1)) +
+    scale_fill_gradient2(mid = "white", high = muted("green"), midpoint = 70, name="Completeness [%]",guide=guide_colourbar(order=3)) + new_scale_fill() + 
+    geom_fruit(
+        data=contam_table,
+        geom=geom_tile, offset = 0.04,
+        mapping=aes(y=Name, fill=Contamination, x=0.25, height=.9, width=.1)) +
+    scale_fill_gradient2(low = "white", high = muted("red"), name="Contamination [%]",guide=guide_colourbar(order=4)) +theme(legend.title= element_text(vjust = 3)) + new_scale_fill() + 
+    geom_fruit(
+        data=QA_TAble, offset = 0.001,
+        geom=geom_tile,
+        mapping=aes(y=Bin.Id, fill=Strain.heterogeneity, x=0.25, height=.9, width=.1)) +
+    scale_fill_gradient2(low = "white", high = muted("blue"), name="Strain heterogeneity [%]",guide=guide_colourbar(order=5))+new_scale_fill()+
+    geom_fruit(
+        geom = geom_text, offset = 0.1,size=4,
+        data = result_table_stress_tukey_HSD_005_tax_uniq_lowest_value_sig_change_sig_labels,
+        aes(y = taxid, x = 0.25, label = combined_column),
+        color = "black"  # Adjust the text color as needed
+        )+new_scale_fill()+
+    geom_fruit(
+        geom = geom_text, offset = 0.1,size=4,
+        data = result_table_stress_tukey_HSD_005_tax_uniq_lowest_value_sig_change_sig_labels,
+        aes(y = taxid, x = 0.25, label = significance),
+        color = "black"  # Adjust the text color as needed
+    )
+ggsave("ES22_IMP_MAGs_tree_sign.jpeg", width = 15, height = 10) ## For Figure
+```
