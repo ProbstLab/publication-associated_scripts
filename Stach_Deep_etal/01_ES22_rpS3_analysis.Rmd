@@ -455,11 +455,11 @@ raw_relative_gather_selected_significant_for_plot_stressorphase <- raw_relative_
   group_by(name,phase,taxid)%>%
     summarise_at(vars(coverage),list(mean_cov=mean))%>%
     left_join(raw_relative_gather_only_tax) %>%
-    group_by(name,phase,taxonomy_keep)%>%
+    group_by(name,phase,taxid)%>%
     summarise_at(vars(mean_cov),list(sum_cov=sum)) %>% 
     left_join(meta_no_index) %>% 
     unique()  %>%
-    group_by(taxonomy_keep) %>% 
+    group_by(taxid) %>% 
      mutate(zscore = (sum_cov - mean(sum_cov))/sd(sum_cov))
 
 raw_relative_gather_selected_significant_for_plot_sorted_stressorphase <- raw_relative_gather_selected_significant_for_plot_stressorphase[order(raw_relative_gather_selected_significant_for_plot_stressorphase$temperature,raw_relative_gather_selected_significant_for_plot_stressorphase$velocity),]
