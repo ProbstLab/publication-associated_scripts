@@ -1,0 +1,325 @@
+---
+title: "Stach_et_al_2025_MT_MG_SW_SED_comparison_Fig2"
+output: html_document
+date: "2024-07-31"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r library}
+library(tidyverse)
+library(vegan)
+library(ggplot2)
+library(ggordiplots)
+library(edgeR)
+library(rcartocolor)
+library(ggh4x)
+```
+```{r dataload}
+setwd("XXXX")
+data <- read_tsv("XXX", progress = T,num_threads = 10) %>% column_to_rownames("gene_id")  ## Counts_per_Gene_cluster_metaG
+length <- read_tsv("XXX", progress = T,num_threads = 10, col_names = F) ## Gene Length
+
+b6 <-  read_tsv("XXX", progress = T,num_threads = 10, col_names = F) ## Gene annotation 
+
+lib_size <- read_tsv("XXX", progress = T,num_threads = 10) %>% select(file,sum_len) %>% 
+  group_by(file) %>% 
+  summarise_at(vars(sum_len),list(total_bp_sum=sum)) ## Sequencing depth metaG
+
+
+meta <- read_tsv("XXX") %>% select(Sample,Temperature,Specimen)%>% filter(Sample %in% colnames(data)) %>% mutate(Temperature = as.double(Temperature)) %>% drop_na() # meta_info
+
+
+data_metaT <- read_tsv("XXX", progress = T,num_threads = 10) %>% column_to_rownames("gene_id")   ## Counts_per_Gene_cluster_metaT
+
+
+lib_size_metaT <- read_tsv("XXX", progress = T,num_threads = 10)%>% select(file,sum_len) ## Sequencing depth metaT
+
+common_cols <- intersect(colnames(data_metaT), colnames(data))
+filtered_data_metaT <- data_metaT[, common_cols]
+
+data_dram2_energy <- read.delim("XXX", header = T, stringsAsFactors = FALSE) %>% select(-X,-count) ## input of distill energy information from DRAM
+```
+
+
+
+```{r normalize_MetaG}
+data$sum=rowSums(data[,1:26])
+filtered_counts=data %>%
+   filter(sum>0)
+
+threshold <- ncol(filtered_counts[,1:26]) * 0.05
+logical_matrix <- filtered_counts[,1:26] > 1
+row_counts <- rowSums(logical_matrix)
+filtered_counts_5_percent_cutoff <- filtered_counts[,1:26][row_counts >= threshold, ]
+
+
+filtered_counts_5_percent_cutoff$gene=row.names(filtered_counts_5_percent_cutoff)
+x= inner_join(filtered_counts_5_percent_cutoff,length,by=c("gene"="X1"))
+
+rpk = ((x[,1:26]*10^3)/x$X2)
+row.names(rpk)=x$gene
+
+rpk.norm <- DGEList(counts=rpk)
+colnames(lib_size)=c("sample","lib.size")
+lib_size$lib.size=as.numeric(lib_size$lib.size) 
+lib_size<- as.data.frame(lib_size)
+row.names(lib_size) = lib_size$sample
+rpk.norm$samples$lib.size = lib_size[rownames(rpk.norm$samples),]$lib.size
+rpk.norm$samples$lib.size
+rpk.norm$samples
+
+meta_cut_temp <- meta %>%
+  mutate(Temp_cut = cut(Temperature,breaks=6,labels = F))
+  
+row.names(meta_cut_temp) <- meta_cut_temp$Sample
+
+rpk.norm$samples$Temp_cut = meta_cut_temp[rownames(rpk.norm$samples),]$Temp_cut
+rpk.norm$samples$Temperature = meta_cut_temp[rownames(rpk.norm$samples),]$Temperature
+rpk.norm$samples$Specimen = meta_cut_temp[rownames(rpk.norm$samples),]$Specimen
+
+rpk.norm_norm_factor <- calcNormFactors(rpk.norm)
+getmms <- cpm(rpk.norm_norm_factor)
+
+
+options(scipen=999)
+getmms_df = as.data.frame(getmms)
+range(getmms_df)
+getmms_df$gene=row.names(getmms)
+
+data.table::fwrite(getmms_df, "getmms_df_5_perc_cutoff.tsv", sep = "\t" )
+```
+
+
+```{r normalize_metaT}
+filtered_data_metaT$sum=rowSums(filtered_data_metaT[,1:26])
+filtered_counts_metaT=filtered_data_metaT %>%
+   filter(sum>0)
+
+threshold_metaT <- ncol(filtered_counts_metaT[,1:26]) * 0.05
+logical_matrix_metaT <- filtered_counts_metaT[,1:26] > 1
+row_counts_metaT <- rowSums(logical_matrix_metaT)
+
+filtered_counts_5_percent_cutoff_metaT <- filtered_counts_metaT[,1:26][row_counts_metaT >= threshold_metaT, ]
+
+filtered_counts_5_percent_cutoff_metaT$gene=row.names(filtered_counts_5_percent_cutoff_metaT)
+x_metaT= inner_join(filtered_counts_5_percent_cutoff_metaT,length,by=c("gene"="X1"))
+
+rpk_metaT = ((x_metaT[,1:26]*10^3)/x_metaT$X2)
+row.names(rpk_metaT)=x_metaT$gene
+
+rpk.norm_metaT <- DGEList(counts=rpk_metaT)
+colnames(lib_size_metaT)=c("sample","lib.size")
+lib_size_metaT$lib.size=as.numeric(lib_size_metaT$lib.size) 
+lib_size_metaT<- as.data.frame(lib_size_metaT)
+row.names(lib_size_metaT) = lib_size_metaT$sample
+rpk.norm_metaT$samples$lib.size = lib_size_metaT[rownames(rpk.norm_metaT$samples),]$lib.size
+rpk.norm_metaT$samples$lib.size
+rpk.norm_metaT$samples
+
+meta_cut_temp <- meta %>%
+  mutate(Temp_cut = cut(Temperature,breaks=6,labels = F))
+  
+row.names(meta_cut_temp) <- meta_cut_temp$Sample
+#meta_cut_temp$Temp_cut <- make.names(meta_cut_temp$Temp_cut)
+
+rpk.norm_metaT$samples$Temp_cut = meta_cut_temp[rownames(rpk.norm_metaT$samples),]$Temp_cut
+rpk.norm_metaT$samples$Temperature = meta_cut_temp[rownames(rpk.norm_metaT$samples),]$Temperature
+rpk.norm_metaT$samples$Specimen = meta_cut_temp[rownames(rpk.norm_metaT$samples),]$Specimen
+
+rpk.norm_norm_factor_metaT <- calcNormFactors(rpk.norm_metaT)
+getmms_metaT <- cpm(rpk.norm_norm_factor_metaT)
+
+
+options(scipen=999)
+getmms_df_metaT = as.data.frame(getmms_metaT)
+range(getmms_df_metaT)
+getmms_df_metaT$gene=row.names(getmms_metaT)
+
+data.table::fwrite(getmms_df_metaT, "getmms_df_5_perc_cutoff_metaT.tsv", sep = "\t" )
+
+```
+
+```{r energy_compare}
+getmms_df_gather_metaG <- getmms_df %>% gather("sample","cpm_metaG",-gene) %>% filter(cpm_metaG>0) 
+getmms_df_gather_metaT <- getmms_df_metaT %>% gather("sample","cpm_metaT",-gene)  %>% filter(cpm_metaT>0) 
+
+getmms_df_gather_metaG_metaT <- getmms_df_gather_metaG %>% ##Merging of MG and MT
+  full_join(getmms_df_gather_metaT, by = c("gene", "sample")) %>%
+  replace_na(list(cpm_metaT = 0, cpm_metaG = 0)) %>% 
+  gather("method","cpm",-gene,-sample) %>% 
+  filter(cpm >0)
+
+getmms_df_spread_energy <-getmms_df_gather_metaG_metaT  %>% dplyr::rename(genes = gene) %>% left_join(data_dram2_energy, by="genes") %>% drop_na(gene_id)
+
+getmms_df_spread_summed_per_category_energy  <- getmms_df_spread_energy %>% group_by(sample,method,category) %>% summarise(sum_cpm = sum(cpm)) %>% left_join(meta_cut_temp %>% rename(sample=Sample))
+
+getmms_df_spread_summed_per_pathway_energy$pathwaY_category <- paste(getmms_df_spread_summed_per_pathway_energy$category,getmms_df_spread_summed_per_pathway_energy$pathway, sep = " & ")
+
+
+
+
+
+results <- data.frame(pathway_category = character(),
+                      wilcox_p_value = numeric(),
+                      stringsAsFactors = FALSE)
+results_MG <- data.frame(pathway_category = character(),
+                      wilcox_p_value = numeric(),
+                      stringsAsFactors = FALSE)
+
+ ## Significance testing of MG and MT
+
+getmms_df_spread_summed_per_pathway_energy_filtered<-getmms_df_spread_summed_per_pathway_energy%>% ungroup() %>% 
+    complete(sample, method, pathwaY_category, 
+             fill = list(sum_cpm = 0)) %>% 
+  filter(method == "cpm_metaT") %>% as.data.frame()%>%
+  mutate(Specimen = ifelse(grepl("_s_", sample), "sediment", "surface_water"))
+
+
+pathway_categories <- unique(getmms_df_spread_summed_per_pathway_energy_filtered$pathwaY_category)
+
+for (i in pathway_categories) {
+  subset_data <- getmms_df_spread_summed_per_pathway_energy_filtered %>%
+    filter(pathwaY_category == i)
+  obs_count <- subset_data %>%
+    summarise(count = n()) %>%
+    ungroup()
+  if (all(obs_count$count >= 26)) {  
+    wilcox_test <- wilcox.test(sum_cpm ~ Specimen, data = subset_data)
+    results <- rbind(results, data.frame(pathway_category = i, 
+                                          wilcox_p_value = wilcox_test$p.value))
+  } else {
+    results <- rbind(results, data.frame(pathway_category = i, 
+                                          wilcox_p_value = NA))  # NA for insufficient data
+  }
+}
+significant_results<- results %>% drop_na() %>% mutate(adj_p = p.adjust(wilcox_p_value, method="fdr")) %>% arrange(adj_p)  %>%
+  mutate(significance = case_when(
+    adj_p < 0.001 ~ "***",
+    adj_p < 0.01 ~ "**",
+    adj_p < 0.05 ~ "*",
+    TRUE ~ "ns"  # non-significant
+  )) %>% mutate(method="cpm_metaT")
+
+
+getmms_df_spread_summed_per_pathway_energy_filtered_MG<-getmms_df_spread_summed_per_pathway_energy%>% ungroup() %>% 
+    complete(sample, method, pathwaY_category, 
+             fill = list(sum_cpm = 0)) %>% 
+  filter(method == "cpm_metaG") %>% as.data.frame()%>%
+  mutate(Specimen = ifelse(grepl("_s_", sample), "sediment", "surface_water"))
+
+
+pathway_categories_MG <- unique(getmms_df_spread_summed_per_pathway_energy_filtered_MG$pathwaY_category)
+
+for (i in pathway_categories_MG) {
+  # Subset the data for the current pathway_category
+
+  subset_data <- getmms_df_spread_summed_per_pathway_energy_filtered_MG %>%
+    filter(pathwaY_category == i)
+  obs_count <- subset_data %>%
+    group_by(Specimen) %>%
+    summarise(count = n()) %>%
+    ungroup()
+  if (all(obs_count$count >= 4)) {  
+    wilcox_test <- wilcox.test(sum_cpm ~ Specimen, data = subset_data)
+    results_MG <- rbind(results, data.frame(pathway_category = i, 
+                                          wilcox_p_value = wilcox_test$p.value))
+  } else {
+    results_MG <- rbind(results, data.frame(pathway_category = i, 
+                                          wilcox_p_value = NA))  # NA for insufficient data
+  }
+}
+
+significant_results_MG<- results_MG %>% drop_na() %>% mutate(adj_p = p.adjust(wilcox_p_value, method="fdr")) %>% arrange(adj_p)  %>%
+  mutate(significance = case_when(
+    adj_p < 0.001 ~ "***",
+    adj_p < 0.01 ~ "**",
+    adj_p < 0.05 ~ "*",
+    TRUE ~ "ns"  # non-significant
+  )) %>% mutate(method="cpm_metaG") 
+
+
+significant_results_combined <- significant_results %>% rbind(significant_results_MG) %>% dplyr::rename("pathwaY_category"=pathway_category) 
+
+
+plot_data <- getmms_df_spread_summed_per_pathway_energy %>%as.data.frame() %>% 
+  left_join(significant_results_combined, by = c("pathwaY_category", "method"))%>% ungroup() %>% 
+    complete(sample, method, pathwaY_category, 
+             fill = list(sum_cpm = 0))%>% 
+  mutate(Specimen = ifelse(grepl("_s_", sample), "sediment", "surface_water"))
+
+
+
+
+## Plotting
+complete_data <- expand.grid(
+    sample=unique(plot_data$sample),
+    pathwaY_category = unique(plot_data$pathwaY_category),
+    method = unique(plot_data$method)
+)
+
+heatmap_plot <- complete_data %>%
+    left_join(plot_data %>% select(sample,pathwaY_category, method, sum_cpm), 
+              by = c("sample","pathwaY_category", "method"))%>%
+    mutate(sum_cpm = ifelse(is.na(sum_cpm), 0, sum_cpm)) %>% ungroup() %>% 
+    arrange(pathwaY_category)%>%
+    mutate(Specimen = ifelse(grepl("_s_", sample), "sediment", "surface_water"))  %>% arrange(pathwaY_category) %>% filter(sum_cpm>0) %>% left_join(meta_cut_temp %>% rename(sample="Sample") %>% select(sample,Temperature),by="sample")%>% 
+    ggplot() +
+    aes(x = reorder(sample,Temperature), y = pathwaY_category, fill = sum_cpm) +
+    geom_tile() +
+    guides(y = ggh4x::guide_axis_nested(delim = "&"))+
+    scale_fill_carto_c(palette = "Earth",direction = 1,na.value="white",trans = "log10" ) +
+    theme_bw()+
+    facet_nested( ~ method + Specimen , scales="free")+
+    theme(axis.text.x = element_text(angle = 25, vjust = 1, hjust=1))
+
+background_data_heatmap <-
+  complete_data %>%
+    left_join(plot_data %>% select(sample,pathwaY_category, method, sum_cpm), 
+              by = c("sample","pathwaY_category", "method"))%>%
+    mutate(sum_cpm = ifelse(is.na(sum_cpm), 0, sum_cpm)) %>% ungroup() %>% 
+    arrange(pathwaY_category)%>%
+    mutate(Specimen = ifelse(grepl("_s_", sample), "sediment", "surface_water"))  %>% arrange(pathwaY_category)  %>% left_join(meta_cut_temp %>% rename(sample="Sample") %>% select(sample,Temperature),by="sample") %>% unique()%>%
+    tidyr::pivot_wider(
+        names_from = pathwaY_category,
+        values_from = sum_cpm
+    )
+data.table::fwrite(background_data_heatmap, "Fig2_Counts_of_MG_MT_metabolic_pathways.tsv", sep = "\t" )
+
+
+
+
+significance_box_plot <- complete_data %>%
+    left_join(plot_data %>% select(sample,pathwaY_category, method, sum_cpm,significance), 
+              by = c("sample","pathwaY_category", "method"))%>%
+    mutate(sum_cpm = ifelse(is.na(sum_cpm), 0, sum_cpm)) %>% ungroup() %>% 
+    arrange(pathwaY_category)%>%
+    mutate(Specimen = ifelse(grepl("_s_", sample), "sediment", "surface_water"))  %>% arrange(pathwaY_category) %>% 
+    ggplot() +
+    aes(x = sum_cpm+0.0001, y = pathwaY_category, fill = Specimen) +  scale_x_continuous(trans = "log10",limits=c(0.0001,80))+
+    geom_boxplot() +
+    
+    guides(y = ggh4x::guide_axis_nested(delim = "&"))+
+    theme_bw()+
+    facet_nested( ~ method , scales="free")+
+        geom_text(aes(x =70, y = pathwaY_category, label = significance), vjust = 0.8, hjust =0, 
+              size = 5, inherit.aes = FALSE, data = . %>% distinct(pathwaY_category, method, significance) %>% filter(significance!="ns"))
+library(patchwork)
+
+plot_combined<-heatmap_plot + significance_box_plot +
+   plot_layout(ncol = 2, widths = c(2, 1),axes  = "collect", guides="collect")
+ggsave("Functions_encoded_activity_MG_MTs.svg", plot = plot_combined, width =30, height = 15, dpi = 300) ## Plot for Fig2 and Supplementary
+
+
+for_temperature_plot <- plot_data %>%
+    mutate(Specimen = ifelse(grepl("_s_", sample), "sediment", "surface_water")) %>% filter(Specimen=="sediment")%>% select(sample, Temperature) %>% unique() %>% drop_na() %>% arrange(Temperature)
+
+temperature_plot<-ggplot(for_temperature_plot) +
+    aes(x = reorder(sample,Temperature), y = Temperature) +
+    geom_point(shape = "circle", size = 2, colour = "#112446") +
+    theme_minimal()
+ggsave("Sample_temperature_plot.svg", plot = temperature_plot, width =7, height = 2, dpi = 300) ## Temperature Information
+
+
+```

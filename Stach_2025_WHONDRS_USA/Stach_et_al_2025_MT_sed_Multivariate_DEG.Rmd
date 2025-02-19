@@ -1,0 +1,492 @@
+---
+title: "Stach_et_al_2025_MT_sed_Multivariate_DEG"
+output: html_document
+date: "2024-07-31"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r library}
+library(tidyverse)
+library(vegan)
+library(ggplot2)
+library(ggordiplots)
+library(edgeR)
+```
+```{r dataload}
+setwd("XXX")
+data <- read_tsv("XXX", progress = T,num_threads = 10) %>% column_to_rownames("gene_id")  ## Counts per cluster MT 
+
+length <- read_tsv("XXX", progress = T,num_threads = 10, col_names = F) ## Gene length 
+data <-data %>% select(-"morescreek_2019_sw_WHONDRS-S19S_0085")  %>%
+  select(-starts_with("ES22")) %>% select(-contains("_sw_")) ## Filter data | remove not targeted samples
+
+b6 <-  read_tsv("XXX", progress = T,num_threads = 10, col_names = F)  ## FunTaxDB annotation of genes
+
+lib_size <- read_tsv("XXX", progress = T,num_threads = 10) %>% select(file,sum_len) ## Sequencing depth
+
+
+meta <- read_tsv("XXX") %>% select(Sample,Temperature,Specimen)%>% filter(Sample %in% colnames(data)) %>% mutate(Temperature = as.double(Temperature)) %>% drop_na() ## Basic meta data
+
+meta_more_data <- read_tsv("XXX") %>% select(Sample,Temperature,Specimen,Depth, Respiration_rates, "61033_C_percent", "01472_N_percent", "82338_del_15N_permil", "63515_del_13C_permil", "00681_NPOC_mg_per_L_as_C", Percent_Fine_Sand,Percent_Med_Sand,Percent_Coarse_Sand,Percent_Tot_Sand,Percent_Clay,Percent_Silt)%>% filter(Sample %in% colnames(data)) %>% mutate(Temperature = as.double(Temperature)) %>% rename(C_percent="61033_C_percent") %>% rename(N_percent ="01472_N_percent") %>% rename(del_15N_permil="82338_del_15N_permil") %>% rename(del_13C_permil ="63515_del_13C_permil") %>% rename(NPOC_mg_per_L_as_C ="00681_NPOC_mg_per_L_as_C")## More metadata -> needed for DEG & NMDS
+
+meta_more_data_2 <- read_tsv("XXX") %>% select(Sample,Temperature,Specimen,Depth, Respiration_rates, "61033_C_percent", "01472_N_percent", "82338_del_15N_permil", "63515_del_13C_permil", "00681_NPOC_mg_per_L_as_C", Percent_Fine_Sand,Percent_Med_Sand,Percent_Coarse_Sand,Percent_Tot_Sand,Percent_Clay,Percent_Silt,Stream_order)%>% filter(Sample %in% colnames(data)) %>% mutate(Temperature = as.double(Temperature)) %>% rename(C_percent="61033_C_percent") %>% rename(N_percent ="01472_N_percent") %>% rename(del_15N_permil="82338_del_15N_permil") %>% rename(del_13C_permil ="63515_del_13C_permil") %>% rename(NPOC_mg_per_L_as_C ="00681_NPOC_mg_per_L_as_C") ## More metadata -> needed for DEG & NMDS
+
+```
+```{r normalize}
+data$sum=rowSums(data[,1:23])
+filtered_counts=data %>%
+   filter(sum>0)
+
+threshold <- ncol(filtered_counts[,1:23]) * 0.05
+logical_matrix <- filtered_counts[,1:23] > 1
+row_counts <- rowSums(logical_matrix)
+filtered_counts_5_percent_cutoff <- filtered_counts[,1:23][row_counts >= threshold, ]
+
+
+filtered_counts_5_percent_cutoff$gene=row.names(filtered_counts_5_percent_cutoff)
+x= left_join(filtered_counts_5_percent_cutoff,length,by=c("gene"="X1"))
+
+rpk = ((x[,1:23]*10^3)/x$X2)
+row.names(rpk)=x$gene
+
+rpk.norm <- DGEList(counts=rpk)
+colnames(lib_size)=c("sample","lib.size")
+lib_size$lib.size=as.numeric(lib_size$lib.size) 
+lib_size<- as.data.frame(lib_size)
+row.names(lib_size) = lib_size$sample
+rpk.norm$samples$lib.size = lib_size[rownames(rpk.norm$samples),]$lib.size
+rpk.norm$samples$lib.size
+rpk.norm$samples
+
+meta_cut_temp <- meta %>%
+  mutate(Temp_cut = cut(Temperature,breaks=6,labels = F))
+  
+row.names(meta_cut_temp) <- meta_cut_temp$Sample
+
+rpk.norm$samples <- rpk.norm$samples%>%  rownames_to_column("Sample") %>% left_join(meta_more_data, by="Sample")%>% left_join(meta_more_data_2 %>% select(Sample,Stream_order), by="Sample") %>% column_to_rownames("Sample")
+
+rpk.norm_norm_factor <- calcNormFactors(rpk.norm)
+getmms <- cpm(rpk.norm_norm_factor)
+
+
+options(scipen=999)
+getmms_df = as.data.frame(getmms)
+range(getmms_df)
+getmms_df$gene=row.names(getmms)
+
+data.table::fwrite(getmms_df, "getmms_df_5_perc_cutoff_sed_only.tsv", sep = "\t" )
+```
+
+
+
+```{r upset_with_NMDS}
+test_meta <- meta_cut_temp %>% left_join(lib_size %>% rename(Sample=sample) %>% rename(lib=lib.size))
+test_meta_2 <- test_meta %>% select(Sample,lib)
+microbial_fraction <- read.delim("singlema_smf_mod.tsv", header = T, stringsAsFactors = FALSE) %>% unique() %>% rename(Sample=sample)
+test_meta3 <- test_meta_2 %>% left_join(microbial_fraction) %>% select(Sample,read_fraction)
+
+##UpsetPlot + Side plots
+
+binary_df <- getmms_df  %>%
+   mutate(across(-gene, ~ if_else(. > 0, 1, 0)))
+shared_genes <- combn(names(binary_df)[-1], 2, function(cols) {
+    shared <- sum(binary_df[[cols[1]]] == 1 & binary_df[[cols[2]]] == 1)
+    tibble(Sample1 = cols[1], Sample2 = cols[2], SharedGenes = shared)
+}, simplify = FALSE) %>%
+    bind_rows()
+
+
+upset_data <- binary_df %>%
+  select(-gene)
+
+upset_temp <- UpSetR::upset(upset_data, 
+              sets = names(upset_data), 
+              nsets = length(names(upset_data)), 
+              nintersects = 75, 
+              order.by = "freq",
+              set.metadata = list(data = test_meta, plots = list( list(type="hist",column="Temperature",assign=20))))
+
+pdf(file="upset_plot_temperature.pdf",  height = 10, width = 20) ##Fig 4 B)
+print(upset_temp)
+dev.off()
+
+upset_data_corr <- upset_data %>% colSums() %>% as.data.frame() %>% rownames_to_column("Sample") %>% rename(set_size = ".") %>% left_join( test_meta_2 %>% left_join(microbial_fraction) %>% select(Sample,read_fraction,lib,metagenome_size)) %>% left_join(meta)
+
+
+library(ggnewscale)
+
+
+
+# Reshape data into long format and rename to upset_data_corr_long
+upset_data_corr_long <- upset_data_corr %>%
+  pivot_longer(
+    cols = c(set_size, read_fraction, Temperature),
+    names_to = "Measurement",
+    values_to = "Value"
+  )
+
+# Reorder Sample based on set_size
+upset_data_corr_long <- upset_data_corr_long %>%
+  mutate(
+    Sample = factor(Sample, levels = upset_data_corr %>% arrange(-set_size) %>% pull(Sample)),
+    Measurement = factor(Measurement, levels = c("Temperature", "read_fraction","set_size" ))
+  )
+
+# Convert to long format for counting intersections
+long_df <- binary_df %>%
+  pivot_longer(cols = -gene, names_to = "Sample", values_to = "Presence") %>%
+  group_by(gene) %>%
+  filter(sum(Presence) > 0) %>%
+  ungroup()
+
+# Count occurrences of each intersection
+intersection_counts <- long_df %>%
+  group_by(gene) %>%
+  summarise(Intersections = sum(Presence)) %>%
+  ungroup() %>% 
+  left_join(b6 %>% dplyr::rename(gene="X1"))%>% arrange(-Intersections)
+
+data.table::fwrite(intersection_counts, "Upset_plot_interaction_counts_gene_annotation.tsv", sep = "\t" ) ## Supp Table SI4
+
+
+side_plot_for_upset <- ggplot() +
+    # Bar plot for set_size
+    geom_col(data = upset_data_corr_long %>% filter(Measurement == "set_size"),
+             aes(x = Value, y = Sample, fill = Measurement), width = 0.7) +
+    scale_fill_manual(values=c("set_size"="#004D40"), name = "Count of active genes")  +
+    ggnewscale::new_scale_fill() +
+    
+    # Bar plot for read_fraction
+    geom_col(data = upset_data_corr_long %>% filter(Measurement == "read_fraction"),
+             aes(x = Value, y = Sample, fill = Measurement), width = 0.7) +
+    scale_fill_manual(values=c("read_fraction"="#1E88E5"), name = "Prokaryotic fraction") +
+    ggnewscale::new_scale_fill() +
+    
+    # Bar plot for Temperature
+    geom_col(data = upset_data_corr_long %>% filter(Measurement == "Temperature"),
+             aes(x = Value, y = Sample, fill = Measurement), width = 0.7) +
+    scale_fill_manual(values=c("Temperature"="#D81B60"), name = "Temperature") +
+    
+    facet_grid(~ Measurement, scales = "free_x") +
+    
+    labs(title = "Bar Plot with Individual Scales per Measurement", 
+         x = "Sample", 
+         y = "Value") +
+    theme_minimal() +
+    theme(legend.position = "right")
+
+pdf(file="side_plot_for_upset.pdf",  height = 10, width = 20) # + upset_temp -> For figure 4
+print(side_plot_for_upset)
+dev.off()
+
+
+cor.test(upset_data_corr$read_fraction, upset_data_corr$Temperature)
+# Create a scatter plot
+pdf(file="corr_temperature_read_fraction.pdf",  height = 5, width = 5) ## Fig 4 C)
+plot(upset_data_corr$read_fraction, upset_data_corr$Temperature, 
+     xlab = "Read Fraction", 
+     ylab = "Temperature", 
+     main = "Correlation between Read Fraction and Temperature",
+     col = "blue", pch = 19)
+
+# Add a linear regression line (correlation line)
+model <- lm(read_fraction ~ Temperature, data = upset_data_corr)  # Create linear model
+abline(model, col = "red", lwd = 2)  # Add the regression line to the plot
+
+# Optionally, display the correlation value on the plot
+correlation <- cor(upset_data_corr$read_fraction, upset_data_corr$Temperature)
+text(x = max(upset_data_corr$read_fraction), y = min(upset_data_corr$Temperature), 
+     labels = paste("Correlation:", round(correlation, 2)), 
+     pos = 2, col = "black")
+dev.off() 
+
+
+
+
+
+cor.test( upset_data_corr$read_fraction,upset_data_corr$set_size)
+pdf(file="corr_read_fraction_set_size.pdf",  height = 5, width = 5) ## Fig 4 D)
+# Create a scatter plot
+plot( upset_data_corr$read_fraction, upset_data_corr$set_size,
+     ylab = "Set Size", 
+     xlab = "Read Fraction", 
+     main = "Correlation between Read Fraction and Set Size",
+     col = "blue", pch = 19)
+
+# Add a linear regression line (correlation line)
+model <- lm(set_size ~ read_fraction, data = upset_data_corr)  # Create linear model
+abline(model, col = "red", lwd = 2)  # Add the regression line to the plot
+
+# Optionally, display the correlation value on the plot
+correlation <- cor(upset_data_corr$read_fraction, upset_data_corr$set_size)
+text(x = max(upset_data_corr$read_fraction), y = min(upset_data_corr$set_size), 
+     labels = paste("Correlation:", round(correlation, 2)), 
+     pos = 2, col = "black")
+dev.off()
+
+
+##NMDS FIG 4A
+
+library(ggsci)
+gg_ordisurf2 <- function(ord, env.var, groups=NA, choices=c(1,2), var.label="Level",
+                        binwidth, pt.size=3, family = "gaussian", plot=TRUE) {
+  x <- y <- z <- Group <- ..level.. <- NULL
+  groups <- as.factor(groups)
+
+  # Extract ordisurf data for plotting
+  ordi <- vegan::ordisurf(ord ~ env.var, family = family, plot=FALSE) # creates the ordisurf object
+  ordi.grid <- ordi$grid # extracts the ordisurf object
+  ordi.data <- expand.grid(x = ordi.grid$x, y = ordi.grid$y) # get x and y
+  ordi.data$z <- as.vector(ordi.grid$z) # unravel the matrix for the z scores
+  df_surf <- data.frame(na.omit(ordi.data)) # gets rid of the NAs
+
+  # Extract site coordinates for plotting.
+  df_ord <- as.data.frame(scores(ord, choices = choices, display = "sites"))
+  if (is.na(groups)[1]) {
+    df_ord <- data.frame(x=df_ord[ , 1], y=df_ord[ , 2])
+  } else {
+    df_ord <- data.frame(x=df_ord[ , 1], y=df_ord[ , 2], Group=groups)
+  }
+
+  # Make axis labels.
+  axis.labels <- ord_labels(ord)[choices]
+  xlab <- axis.labels[1]
+  ylab <- axis.labels[2]
+
+  # Calculate default binwidth
+  # Can change the binwidth depending on how many contours you want
+  if(missing(binwidth)) {
+    r <- range(env.var)
+    binwidth <- (r[2]-r[1])/15
+  } else {
+    binwidth = binwidth
+  }
+
+  # Plotting in ggplot2
+  if (is.na(groups)[1]) {
+    plt <- ggplot() +
+      geom_point(data=df_ord, aes(x=x, y=y), size=pt.size) +
+      xlab(xlab) + ylab(ylab) +
+      stat_contour(data=df_surf, aes(x=x, y=y, z=z, color= ..level..), binwidth=binwidth) +
+      labs(color=var.label) +
+      coord_fixed(ratio=1) +
+      scale_fill_carto_d(palette = "Earth", direction = 1)
+  } else {
+    plt <- ggplot() +
+      geom_point(data=df_ord, aes(x=x, y=y, fill=Group), shape=21, color="#00000000", size=pt.size) +
+      xlab(xlab) + ylab(ylab) +
+      stat_contour(data=df_surf, aes(x=x, y=y, z=z, color= ..level..), binwidth=binwidth) +
+      labs(color=var.label) +
+      coord_fixed(ratio=1)+
+      scale_fill_brewer(palette = "YlOrBr",)+
+  scale_colour_gradient(low = "grey", high = "brown")
+  }
+
+  # Plot?
+  if (plot) {print(plt)}
+
+  # Return data frames, plot as a list.
+  invisible(list(df_ord=df_ord, df_surf=df_surf, plot=plt))
+}
+
+
+dds_normalized_counts_sed <- getmms_df %>% as.data.frame() %>% 
+  select(-contains("_sw_")) %>% select(-gene)
+
+meta_sed <- meta_more_data %>% select(Sample,Temperature,Specimen,Depth, Respiration_rates, C_percent, N_percent, del_15N_permil, del_13C_permil, NPOC_mg_per_L_as_C, Percent_Fine_Sand,Percent_Med_Sand,Percent_Coarse_Sand,Percent_Tot_Sand,Percent_Clay,Percent_Silt) %>%  filter(Sample %in% colnames(dds_normalized_counts_sed)) %>% mutate(Temperature = as.double(Temperature)) %>%  mutate(Temp_cut = cut(Temperature,breaks=6))%>% left_join(meta_more_data_2 %>% select(Sample,Stream_order), by="Sample")
+
+
+filtered_norm_counts_dist_sed = vegdist(t(dds_normalized_counts_sed), method="bray")
+
+
+nmds_result_sed <- metaMDS(filtered_norm_counts_dist_sed,wascores=FALSE,zerodist="add")
+mds.points_sed <- cbind(nmds_result_sed$points[,1:2])
+mds.points_sed
+mds.dat_sed <-mds.points_sed %>% as.data.frame() %>% rownames_to_column("Sample") %>% left_join(meta_sed)
+mds.dat_sed 
+
+mds.dat_sed_with_set_size <- mds.dat_sed %>% left_join(upset_data_corr %>% select(Sample,set_size))
+
+pdf(file="nmds_temperature.pdf",  height = 8, width = 5) ### Fig 4 A)
+gg_ordisurf2(nmds_result_sed,mds.dat_sed$Temperature, groups = mds.dat_sed$Temp_cut)
+dev.off()
+
+
+
+```
+
+```{r testingDEG} 
+##Differential gene expression testing for Fig 5 and Fig S3&S4
+b6_mutate <- b6
+b6_mutate$X2 <-gsub("UniRef[^ ]*|n=[^ ]*|TaxID=[^ ]*|RepID=[^ ]*", "", b6_mutate$X2)
+
+designMat <- model.matrix(~ rpk.norm_norm_factor$samples$Temperature + rpk.norm_norm_factor$samples$Percent_Tot_Sand+rpk.norm_norm_factor$samples$Stream_order  )
+
+rpk.norm_norm_factor_GLM <- estimateDisp(rpk.norm_norm_factor, design=designMat, robust=TRUE)
+
+fit <- glmQLFit(rpk.norm_norm_factor_GLM, designMat)
+
+qlf_temperature <- glmQLFTest(fit, coef = "rpk.norm_norm_factor$samples$Temperature")
+qlf_sand_percentage <- glmQLFTest(fit, coef = "rpk.norm_norm_factor$samples$Percent_Tot_Sand")
+qlf_stream_order <- glmQLFTest(fit, coef = "rpk.norm_norm_factor$samples$Stream_order")
+
+# Extract top differentially expressed genes for temperature
+top_temp <- topTags(qlf_temperature, n = Inf, p.value = 0.5)
+top_temp_annot <- top_temp %>% as.data.frame() %>% rownames_to_column("X1") %>% left_join(b6_mutate)
+
+# Extract top differentially expressed genes for sand percentage
+top_sand <- topTags(qlf_sand_percentage, n = Inf, p.value = 0.5)
+top_sand_annot <- top_sand %>% as.data.frame() %>% rownames_to_column("X1") %>% left_join(b6_mutate)
+
+# Extract top differentially expressed genes for stream order
+top_stream_order <- topTags(qlf_stream_order, n = Inf, p.value = 0.5)
+top_stream_order_annot <- top_stream_order %>% as.data.frame() %>% rownames_to_column("X1") %>% left_join(b6_mutate)
+
+library(rcartocolor)
+
+plot_temp_data<- top_temp_annot %>%
+    rename("gene"=X1) %>% 
+  filter(FDR < 0.05) %>% 
+    left_join(dds_normalized_counts_sed %>% rownames_to_column("gene")) %>% 
+  select(-logCPM,-F,-PValue,-X2) %>% 
+    gather("Sample","cpm",-FDR,-gene,-logFC) %>% 
+    left_join(meta_sed)  %>%
+    group_by(gene) %>% 
+    mutate(zscore = (cpm - mean(cpm))/sd(cpm)) %>% 
+    ungroup() %>% 
+    left_join(b6_mutate %>% rename(gene=X1))   %>%     
+  arrange(logFC,X2)
+
+
+
+library(ggrepel)
+alpha = 0.05
+volcano_plot_temp <-ggplot(top_temp_annot, aes(x = logFC, y = -log10(FDR))) +
+  # Add a category column for legend mapping
+  geom_point(data = mutate(top_temp_annot, 
+                           category = case_when(
+                             abs(logFC) > .75 & FDR < alpha & is.na(X2) ~ "Uncharacterized/Hypothetical",
+                             abs(logFC) > .75 & FDR < alpha & grepl("uncharacterized protein|hypothetical protein", X2, ignore.case = TRUE) ~ "Uncharacterized/Hypothetical",
+                             abs(logFC) > .75 & FDR < alpha ~ "Significant",
+                             TRUE ~ "Non-significant")),
+             aes(shape = category, color = category), size = 3) +
+  # Threshold lines
+  geom_hline(yintercept = -log10(alpha), linetype = "dashed", color = "brown") +
+  geom_vline(xintercept = c(-.75, .75), linetype = "dashed", color = "brown") +
+  geom_vline(xintercept = 0, color = "black") +
+  # Labels for significant points without excluded terms
+  geom_text_repel(data = filter(top_temp_annot, abs(logFC) > .75 & FDR < alpha & 
+                                 !grepl("uncharacterized protein|hypothetical protein", X2, ignore.case = TRUE)),
+                  aes(label = X2),
+                  size = 3,
+                  box.padding = 0.5,
+                  point.padding = 0.1,
+                  force = 10) +
+  labs(title = "Temperature increase",
+       x = "Effect size: log2(fold-change)",
+       y = "-log10(adjusted p-value)",
+       shape = "Category",  # Legend title for shapes
+       color = "Category") +  # Legend title for colors
+  scale_shape_manual(values = c("Non-significant" = 20, 
+                                "Significant" = 20, 
+                                "Uncharacterized/Hypothetical" = 17)) +
+  scale_color_manual(values = c("Non-significant" = "gray", 
+                                "Significant" = "black", 
+                                "Uncharacterized/Hypothetical" = "black")) +
+  theme_minimal()
+
+
+
+
+plot_stream_order_data<- top_stream_order_annot %>%
+    rename("gene"=X1) %>% 
+  filter(FDR < 0.05) %>% 
+    left_join(dds_normalized_counts_sed %>% rownames_to_column("gene")) %>% 
+  select(-logCPM,-F,-PValue,-X2) %>% 
+    gather("Sample","cpm",-FDR,-gene,-logFC) %>% 
+    left_join(meta_sed)  %>%
+    group_by(gene) %>% 
+    mutate(zscore = (cpm - mean(cpm))/sd(cpm)) %>% 
+    ungroup() %>% 
+    left_join(b6_mutate %>% rename(gene=X1))   %>%     
+  arrange(logFC,X2)
+
+
+
+plot_stream_order_separate_plots <- plot_stream_order_data %>%
+  filter(abs(logFC) > 0.75 & 
+           !grepl("uncharacterized protein|hypothetical protein", X2, ignore.case = TRUE) & 
+           !is.na(X2)) %>%
+  mutate(up_down = if_else(logFC > 0, "up", "down")) %>%
+  unite("combined", up_down, X2, sep = "_", remove = FALSE) %>%
+  arrange(combined)
+
+# Plot for "up"
+up_plot_stream_order <- plot_stream_order_separate_plots %>% ## Fig S4
+  filter(up_down == "up") %>%
+  ggplot() +
+  aes(x = reorder(Sample, Stream_order), y = fct_inorder(paste0(X2, "&", up_down)), fill = zscore) +
+  geom_tile() +
+  guides(y = ggh4x::guide_axis_nested(delim = "&")) +
+  scale_fill_carto_c(palette = "Earth", direction = 1, na.value = "white") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 25, vjust = 1, hjust = 1)) +
+  ggtitle("Upregulated Proteins")
+ggsave("heatmap_plot_stream_order_up.svg", plot = up_plot_stream_order, width = 15, height = 20, dpi = 300)
+
+
+
+# Plot for "down"
+down_plot_stream_order <- plot_stream_order_separate_plots %>% ## Fig S3
+  filter(up_down == "down") %>%
+  ggplot() +
+  aes(x = reorder(Sample, Stream_order), y = fct_inorder(paste0(X2, "&", up_down)), fill = zscore) +
+  geom_tile() +
+  guides(y = ggh4x::guide_axis_nested(delim = "&")) +
+  scale_fill_carto_c(palette = "Earth", direction = 1, na.value = "white") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 25, vjust = 1, hjust = 1)) +
+  ggtitle("Downregulated Proteins")
+ggsave("heatmap_plot_stream_order_down.svg", plot = down_plot_stream_order, width = 15, height = 20, dpi = 300) 
+
+data.table::fwrite( plot_stream_order_data %>%
+  filter(abs(logFC) > 0.75 ) %>%
+  mutate(up_down = if_else(logFC > 0, "up", "down")) %>%
+  unite("combined", up_down, X2, sep = "_", remove = FALSE) %>%
+  arrange(combined) %>% select(gene,logFC,FDR,up_down,X2) %>% unique() %>% rename(FunTaxDB_annotation ="X2") %>% mutate(Environmental_variable="Stream_order") %>% rbind(plot_temp_data %>%
+  filter(abs(logFC) > 0.75 ) %>%
+  mutate(up_down = if_else(logFC > 0, "up", "down")) %>% select(gene,logFC,FDR,up_down,X2) %>% unique() %>% rename(FunTaxDB_annotation ="X2") %>% mutate(Environmental_variable="Temperature") )%>% mutate( 
+                           category = case_when(
+                             abs(logFC) > .75 & FDR < alpha & is.na(FunTaxDB_annotation) ~ "Uncharacterized/Hypothetical",
+                             abs(logFC) > .75 & FDR < alpha & grepl("uncharacterized protein|hypothetical protein", FunTaxDB_annotation, ignore.case = TRUE) ~ "Uncharacterized/Hypothetical",
+                             abs(logFC) > .75 & FDR < alpha ~ "Significant",
+                             TRUE ~ "Non-significant")), "Up_down_regulated_genes_list.tsv", sep = "\t" ) ## Table SI5
+
+
+library(ggrepel)
+alpha = 0.05
+volcano_plot_stream_order <- ggplot(top_stream_order_annot, aes(x = logFC, y = -log10(FDR))) + ## Figure 5 B)
+  # Add a category column for legend mapping
+  geom_point(data = mutate(top_stream_order_annot, 
+                           category = case_when(
+                             abs(logFC) > .75 & FDR < alpha & is.na(X2) ~ "Uncharacterized/Hypothetical",
+                             abs(logFC) > .75 & FDR < alpha & grepl("uncharacterized protein|hypothetical protein", X2, ignore.case = TRUE) ~ "Uncharacterized/Hypothetical",
+                             abs(logFC) > .75 & FDR < alpha ~ "Significant",
+                             TRUE ~ "Non-significant")),
+             aes(shape = category, color = category), size = 3) +
+  # Threshold lines
+  geom_hline(yintercept = -log10(alpha), linetype = "dashed", color = "brown") +
+  geom_vline(xintercept = c(-.75, .75), linetype = "dashed", color = "brown") +
+  geom_vline(xintercept = 0, color = "black") +
+  scale_shape_manual(values = c("Non-significant" = 20, 
+                                "Significant" = 20, 
+                                "Uncharacterized/Hypothetical" = 17)) +
+  scale_color_manual(values = c("Non-significant" = "gray", 
+                                "Significant" = "black", 
+                                "Uncharacterized/Hypothetical" = "black")) +
+  theme_minimal()
+
+```
+

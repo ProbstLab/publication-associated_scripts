@@ -1,0 +1,249 @@
+---
+title: "Stach_et_al_2025_all_Fig3_MAG_MT"
+output: html_document
+date: "2024-09-10"
+---
+
+```{r library}
+library(tidyverse)
+library(edgeR)
+library(ggtreeExtra)
+library(ggstar)
+library(ggplot2)
+library(ggtree)
+library(ggsci)
+library(treeio)
+library(cowplot)
+library(scales)
+library(tidyverse)
+library(ggnewscale)
+```
+
+```{r load}
+setwd("XXX")
+
+
+
+data_metaT <- read_tsv("XXX", progress = T,num_threads = 10) %>% column_to_rownames("gene_id") ## metaT data on MAGs from htseq-count 
+length <- read_tsv("XXX", progress = T,num_threads = 10, col_names = F) ## gene length
+
+Gene_to_contig_to_MAG <- read_tsv("XXX",col_names = F)  ## Gene to MAG info
+
+
+lib_size_metaT <- read_tsv("XXX", progress = T,num_threads = 10)%>% select(file,sum_len) ## sequencing depth MetaT
+
+MAG_coverage <- read_tsv("XXX")  ## Load MetaG data just to get those samples with both surface and sediment data
+meta <- read_tsv("XXX") %>% select(Sample,Temperature,Specimen)%>% filter(Sample %in% colnames(MAG_coverage)) %>% mutate(Temperature = as.double(Temperature)) %>% drop_na() ## meta information on samples
+
+
+common_cols <- intersect(colnames(MAG_coverage), colnames(data_metaT))
+filtered_data_metaT <- data_metaT[, common_cols]
+
+
+
+tree <- read.tree("XXX") ## Tree from gtdbtk
+gtdb <- read.table("XXX", sep = "\t",  header=T) %>% dplyr::rename(Genome = user_genome) %>% select(Genome, classification) ## summary output from gtdbtk
+
+active_MAGs_annotation <- read_tsv("XXX") ## annotation of active MAGs
+energy_annotation <- read.table("distill_energy_Jan252024_add_name.txt", sep="\t", header=T)
+```
+
+
+```{r metaT}
+
+filtered_data_metaT$sum=rowSums(filtered_data_metaT[,1:26])
+filtered_counts_metaT=filtered_data_metaT %>%
+   filter(sum>0)
+
+threshold_metaT <- ncol(filtered_counts_metaT[,1:26]) * 0.05
+logical_matrix_metaT <- filtered_counts_metaT[,1:26] > 1
+row_counts_metaT <- rowSums(logical_matrix_metaT)
+
+filtered_counts_5_percent_cutoff_metaT <- filtered_counts_metaT[,1:26][row_counts_metaT >= threshold_metaT, ]
+
+filtered_counts_5_percent_cutoff_metaT$gene=row.names(filtered_counts_5_percent_cutoff_metaT)
+x_metaT= inner_join(filtered_counts_5_percent_cutoff_metaT,length,by=c("gene"="X2"))
+
+rpk_metaT = ((x_metaT[,1:26]*10^3)/x_metaT$X1)
+row.names(rpk_metaT)=x_metaT$gene
+
+rpk.norm_metaT <- DGEList(counts=rpk_metaT)
+colnames(lib_size_metaT)=c("sample","lib.size")
+lib_size_metaT$lib.size=as.numeric(lib_size_metaT$lib.size) 
+lib_size_metaT<- as.data.frame(lib_size_metaT)
+row.names(lib_size_metaT) = lib_size_metaT$sample
+rpk.norm_metaT$samples$lib.size = lib_size_metaT[rownames(rpk.norm_metaT$samples),]$lib.size
+rpk.norm_metaT$samples$lib.size
+rpk.norm_metaT$samples
+
+meta_cut_temp <- meta %>%
+  mutate(Temp_cut = cut(Temperature,breaks=6,labels = F))
+  
+row.names(meta_cut_temp) <- meta_cut_temp$Sample
+
+rpk.norm_metaT$samples$Temp_cut = meta_cut_temp[rownames(rpk.norm_metaT$samples),]$Temp_cut
+rpk.norm_metaT$samples$Temperature = meta_cut_temp[rownames(rpk.norm_metaT$samples),]$Temperature
+rpk.norm_metaT$samples$Specimen = meta_cut_temp[rownames(rpk.norm_metaT$samples),]$Specimen
+
+rpk.norm_norm_factor_metaT <- calcNormFactors(rpk.norm_metaT)
+getmms_metaT <- cpm(rpk.norm_norm_factor_metaT)
+
+
+options(scipen=999)
+getmms_df_metaT = as.data.frame(getmms_metaT)
+range(getmms_df_metaT)
+getmms_df_metaT$gene=row.names(getmms_metaT)
+
+data.table::fwrite(getmms_df_metaT, "getmms_df_5_perc_cutoff_metaT.tsv", sep = "\t" )
+
+```
+
+
+
+```{r Meta_T_filter_for_sed}
+getmms_df_MAG_info = inner_join(getmms_df_metaT,Gene_to_contig_to_MAG,by=c("gene"="X2"))
+getmms_df_MAG_info_gathered <- getmms_df_MAG_info %>% gather("Sample","rpk",-gene,-X1,-X3) %>% filter(rpk >0)
+
+getmms_df_MAG_info_gathered_filtered <- getmms_df_MAG_info_gathered %>%
+  group_by(Sample, X3) %>%                  # Group by 'sample' and 'X3'
+  filter(n() >= 20) %>%                     # Keep groups with at least 20 rows (genes)
+  summarise(sum_rpk = sum(rpk)) %>% 
+  ungroup()
+
+gtdb <- read.table("gtdbtk.combined.summary.tsv", sep = "\t",  header=T) %>% dplyr::rename(Genome = user_genome) %>% select(Genome, classification)
+
+getmms_df_MAG_info_gathered_filtered_meta_info <- getmms_df_MAG_info_gathered_filtered %>% left_join(meta_cut_temp) %>% dplyr::rename(Genome = X3) %>% left_join(gtdb)
+
+getmms_df_MAG_info_gathered_filtered_meta_info_active_in_sed_genome_names<- getmms_df_MAG_info_gathered_filtered_meta_info %>% filter(Specimen =="sediment") %>% filter(sum_rpk > 0)%>% select(Genome)  %>% unique
+
+
+getmms_df_MAG_info_gathered_filtered_meta_info_active_in_sed <- getmms_df_MAG_info_gathered_filtered_meta_info %>% filter(getmms_df_MAG_info_gathered_filtered_meta_info$Genome %in% getmms_df_MAG_info_gathered_filtered_meta_info_active_in_sed_genome_names$Genome)
+```
+
+```{r map_drawing}
+
+
+Gene_to_contig_to_MAG_kegg_id <- Gene_to_contig_to_MAG  %>%
+    separate(X2, into = c("part1", "part2"), sep = "_",remove = F) %>%
+    mutate(gene_ids = paste(X1, part2, sep = "_")) %>% left_join(active_MAGs_annotation %>% select(kegg_id,gene_ids))
+
+active_MAGs_annotation_energy <- read_tsv("distill_energy.MAGs_active_in_sed.separate_lines.tsv") %>% dplyr::rename("kegg_id"=gene_id) %>% dplyr::rename("gene_id"=...9)%>% left_join(Gene_to_contig_to_MAG_kegg_id %>% select(gene_ids,X1,X3) %>% dplyr::rename("gene_id"=gene_ids)) ## Load annotation for active MAGs as filtered above (active genes > 20)
+
+active_MAGs_annotation_energy_encoded <-  active_MAGs_annotation_energy%>% filter(category=="Sulfur"|category=="Nitrogen"|category=="C1-methane"|category=="Photosyntesis") %>% left_join(energy_annotation%>% filter(category=="Sulfur"|category=="Nitrogen"|category=="C1-methane"|category=="Photosynthesis") %>% select(gene_id,name) %>% dplyr::rename("kegg_id"=gene_id) %>% unique() ) %>% unique() 
+
+Gene_to_contig_to_MAG_kegg_id_drop_na <- Gene_to_contig_to_MAG_kegg_id %>% drop_na()
+
+getmms_df_MAG_info = inner_join(getmms_df_metaT,Gene_to_contig_to_MAG,by=c("gene"="X2"))
+getmms_df_MAG_info_gathered <- getmms_df_MAG_info %>% gather("Sample","rpk",-gene,-X1,-X3) %>% filter(rpk >0)
+
+mean_activity_genes_in_sed <- getmms_df_MAG_info_gathered %>%
+    group_by(Sample, X3) %>%                  # Group by 'sample' and 'X3'
+    filter(n() >= 20) %>% left_join(meta_cut_temp) %>% filter(Specimen =="sediment") %>% 
+    ungroup() %>% 
+    group_by(gene,X3) %>% 
+    summarise(mean_rpk_sed = mean(rpk))
+
+
+Gene_to_contig_to_MAG_kegg_id_drop_na_energy_mapped <-Gene_to_contig_to_MAG_kegg_id_drop_na %>% dplyr::rename("gene"=X2) %>% left_join(mean_activity_genes_in_sed) %>% left_join(energy_annotation %>% dplyr::rename("kegg_id"=gene_id)) %>% drop_na(gene_description) %>% drop_na(mean_rpk_sed) %>% dplyr::rename("genome"=X3) %>% left_join(gtdb %>% dplyr::rename(genome = Genome) %>% select(genome, classification)) %>%
+  separate(classification, into = c("Domain", "Phylum", "Class","Order","Family","Genus","Species"), sep = ";")
+Gene_to_contig_to_MAG_kegg_id_drop_na_energy_mapped_genomes_of_interest <- Gene_to_contig_to_MAG_kegg_id_drop_na_energy_mapped %>% filter(category=="Sulfur"|category=="Nitrogen") %>% select(pathway,genome,name) %>% unique() %>% arrange(pathway) %>% select(genome) %>% unique() %>% as.data.frame()
+
+
+encoded_pathways_of_MAGs_of_interest <- active_MAGs_annotation_energy_encoded %>% filter(X3 %in% Gene_to_contig_to_MAG_kegg_id_drop_na_energy_mapped_genomes_of_interest$genome)%>% filter(category=="Sulfur"|category=="Nitrogen") %>% select(kegg_id,pathway,X3,name) %>% unique() %>% dplyr::rename("genome"=X3) %>% left_join(gtdb %>% dplyr::rename(genome = Genome) %>% select(genome, classification)) 
+
+encoded_plus_expressed_info <- encoded_pathways_of_MAGs_of_interest %>% left_join(Gene_to_contig_to_MAG_kegg_id_drop_na_energy_mapped %>% select(kegg_id,pathway,genome,name,mean_rpk_sed), by=c("kegg_id","pathway","genome","name"))  %>%
+  separate(classification, into = c("Domain", "Phylum", "Class","Order","Family","Genus","Species"), sep = ";")
+encoded_plus_expressed_info_count <- encoded_plus_expressed_info%>% select(genome,Class) %>% unique() %>% arrange(Class) %>% mutate(number=rownames(.)) %>% select(genome,number)
+
+encoded_plus_expressed_info_count_added <- encoded_plus_expressed_info %>% left_join(encoded_plus_expressed_info_count)
+
+
+data.table::fwrite(encoded_plus_expressed_info_count_added, "encoded_and_expressed_nitrogen_sulfur_MAGs_active_in_sed_tmp_test.tsv", sep = "\t" ) ## Information used for Figure 3 (Supplementary Table SI9)
+
+```
+
+
+```{r tree}
+gtdb_clean <- gtdb
+gtdb_clean$classification <- gsub("d__","", gtdb_clean$classification)
+gtdb_clean$classification <- gsub("p__","", gtdb_clean$classification)
+gtdb_clean$classification <- gsub("c__","", gtdb_clean$classification)
+gtdb_clean$classification <- gsub("o__","", gtdb_clean$classification)
+gtdb_clean$classification <- gsub("f__","", gtdb_clean$classification)
+gtdb_clean$classification <- gsub("g__","", gtdb_clean$classification)
+gtdb_clean$classification <- gsub("s__","", gtdb_clean$classification)
+
+gtdb_clean$classification_keep <- gtdb_clean$classification
+
+gtdb_clean2 <- gtdb_clean %>% select(Genome, classification_keep, classification) %>% separate(classification, c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species"))
+
+p1 <- ggtree(tree, layout="rectangular", open.angle=10, size=0.5)
+
+p2<- p1  +
+      geom_fruit(
+          offset =  0.1,
+          data=gtdb_clean2,
+          geom=geom_star,
+          mapping=aes(y=Genome, fill=Phylum, starshape='test'),
+          position="identity", size=4,
+          starstroke=.2) + 
+      scale_starshape_manual(
+          values=c(15), guide="none")              + 
+      scale_fill_brewer(guide=guide_legend(
+                    override.aes=list(starshape=15),
+                    order=1, text.size=6)) +
+      theme(#legend.position=c(0.96, 0.5), # the position of legend.
+          legend.background=element_rect(fill=NA), # the background of legend.
+          legend.title=element_text(size=9), # the title size of legend.
+          legend.text=element_text(size=8), # the text size of legend.
+          legend.spacing.y = unit(0.01, "cm")  # the distance of legends (y orientation).
+      )+ new_scale_fill()
+
+
+
+getmms_df_MAG_info_gathered_filtered_meta_info_active_in_sed %>% 
+  separate(classification, into = c("Domain", "Phylum", "Class","Order","Family","Genus","Species"), sep = ";")%>%
+            filter(Domain == "d__Bacteria")
+
+
+p3 <- p2+ 
+    geom_fruit(
+        data = getmms_df_MAG_info_gathered_filtered_meta_info_active_in_sed %>%
+            group_by(Genome, Specimen) %>%               
+            summarize(count_over_0 = sum(sum_rpk > 0),    
+                      .groups = "drop") , 
+        geom = geom_bar,
+        mapping = aes(y = Genome, x = count_over_0, fill=Specimen),
+        pwidth=0.38, 
+        orientation="y", 
+        stat="identity",
+        axis.params = list(
+            axis      = "x",
+            text.size = 4,
+            hjust     = 0.5,
+            vjust     = 1.2,
+            nbreak    = 3
+        ),
+    )+ 
+  scale_fill_carto_d(palette = "Earth", direction = 1) 
+
+p4 <-p3 + 
+    geom_fruit(
+        data = encoded_plus_expressed_info_count,
+        geom = geom_text,
+        mapping = aes(y = genome, x = 1, label = number),
+        offset = 0.05,     
+        size = 3           
+    )
+ggsave("MAGs_active_in_sed_Tree_test.svg", plot = p4, width =15, height = 20, dpi = 300) ## Tree plot in Fig3
+
+```
+
+
+
+
+
+
+
+
+
